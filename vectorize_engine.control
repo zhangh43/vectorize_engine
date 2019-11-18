@@ -1,0 +1,5 @@
+# vectorize_engine extension
+comment = 'vectorize_engine'
+default_version = '1.0'
+module_pathname = '$libdir/vectorize_engine'
+relocatable = true
