@@ -9,7 +9,7 @@
 
 
 static void Vslot_deform_tuple(TupleTableSlot *slot, int natts);
-
+extern void _vslot_getsomeattrs(TupleTableSlot *slot, int attnum);
 /* --------------------------------
  *		VMakeTupleTableSlot
  *
@@ -25,17 +25,7 @@ VMakeTupleTableSlot(void)
 	slot = palloc(sizeof(VectorTupleSlot));
 	NodeSetTag(slot, T_TupleTableSlot);
 
-	slot->tts_isempty = true;
-	slot->tts_shouldFree = false;
-	slot->tts_shouldFreeMin = false;
-	slot->tts_tuple = NULL;
-	slot->tts_tupleDescriptor = NULL;
-	slot->tts_mcxt = CurrentMemoryContext;
-	slot->tts_buffer = InvalidBuffer;
-	slot->tts_nvalid = 0;
-	slot->tts_values = NULL;
-	slot->tts_isnull = NULL;
-	slot->tts_mintuple = NULL;
+	init_slot(slot, NULL);
 
 	/* vectorized fields */
 	vslot = (VectorTupleSlot*)slot;
@@ -81,15 +71,15 @@ static void
 Vslot_deform_tuple(TupleTableSlot *slot, int natts)
 {
 	VectorTupleSlot	*vslot = (VectorTupleSlot *)slot;
+	HeapTuple	tuple;// = TupGetHeapTuple(slot); 
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
-	HeapTuple	tuple;
-	HeapTupleHeader tup;
-	bool		hasnulls;
+	HeapTupleHeader tup;// = tuple->t_data;
+	bool		hasnulls;// = HeapTupleHasNulls(tuple);
 	Form_pg_attribute *att = tupleDesc->attrs;
 	int			attnum;
 	char	   *tp;				/* ptr to tuple data */
 	long		off;			/* offset in tuple data */
-	bits8	   *bp;		/* ptr to null bitmap in tuple */
+	bits8	   *bp;// = tup->t_bits;		/* ptr to null bitmap in tuple */
 	bool		slow;			/* can we use/set attcacheoff? */
 	int			row;
 	vtype		*column;
@@ -101,11 +91,11 @@ Vslot_deform_tuple(TupleTableSlot *slot, int natts)
 		bp = tup->t_bits;
 		hasnulls = HeapTupleHasNulls(tuple);
 
-		attnum = slot->tts_nvalid;
 		/*
 		 * Check whether the first call for this tuple, and initialize or restore
 		 * loop state.
 		 */
+		attnum = slot->PRIVATE_tts_nvalid;
 		/* vectorize engine deform once for now */
 		off = 0;
 		slow = false;
@@ -115,7 +105,7 @@ Vslot_deform_tuple(TupleTableSlot *slot, int natts)
 		for (; attnum < natts; attnum++)
 		{
 			Form_pg_attribute thisatt = att[attnum];
-			column = (vtype *)slot->tts_values[attnum];
+			column = (vtype *)slot->PRIVATE_tts_values[attnum];
 
 			if (hasnulls && att_isnull(attnum, bp))
 			{
@@ -155,6 +145,8 @@ Vslot_deform_tuple(TupleTableSlot *slot, int natts)
 				if (!slow)
 					thisatt->attcacheoff = off;
 			}
+			if (!slow && thisatt->attlen < 0)
+				slow = true;
 
 			column->values[row] = fetchatt(thisatt, tp + off);
 
@@ -165,42 +157,42 @@ Vslot_deform_tuple(TupleTableSlot *slot, int natts)
 		}
 	}
 
-
-	attnum = slot->tts_nvalid;
+	attnum = slot->PRIVATE_tts_nvalid;
 	for (; attnum < natts; attnum++)
 	{
-		column = (vtype *)slot->tts_values[attnum];
+		column = (vtype *)slot->PRIVATE_tts_values[attnum];
 		column->dim = vslot->dim;
 	}
 
 	/*
 	 * Save state for next execution
 	 */
-	slot->tts_nvalid = attnum;
+	slot->PRIVATE_tts_nvalid = attnum;
 }
 
-
 /*
- * slot_getallattrs
- *		This function forces all the entries of the slot's Datum/isnull
- *		arrays to be valid.  The caller may then extract data directly
- *		from those arrays instead of using slot_getattr.
+ * slot_getsomeattrs
+ *		This function forces the entries of the slot's Datum/isnull
+ *		arrays to be valid at least up through the attnum'th entry.
  */
 void
-Vslot_getallattrs(TupleTableSlot *slot)
+_vslot_getsomeattrs(TupleTableSlot *slot, int attnum)
 {
 	VectorTupleSlot	*vslot = (VectorTupleSlot *)slot;
-	int			tdesc_natts = slot->tts_tupleDescriptor->natts;
-	int			attnum;
 	HeapTuple	tuple;
+	int			attno;
 	int			i;
 
 	/* Quick out if we have 'em all already */
-	if (slot->tts_nvalid == tdesc_natts)
+	if (slot->PRIVATE_tts_nvalid >= attnum)
 		return;
 
 	if (vslot->dim == 0)
 		return;
+	/* Check for caller error */
+	if (attnum <= 0 || attnum > slot->tts_tupleDescriptor->natts)
+		elog(ERROR, "invalid attribute number %d", attnum);
+
 	/*
 	 * otherwise we had better have a physical tuple (tts_nvalid should equal
 	 * natts in all virtual-tuple cases)
@@ -211,24 +203,38 @@ Vslot_getallattrs(TupleTableSlot *slot)
 		if (tuple == NULL)			/* internal error */
 			elog(ERROR, "cannot extract attribute from empty tuple slot");
 	}
+
 	/*
 	 * load up any slots available from physical tuple
 	 */
-	attnum = HeapTupleHeaderGetNatts(vslot->tts_tuples[0].t_data);
-	attnum = Min(attnum, tdesc_natts);
+	attno = HeapTupleHeaderGetNatts(vslot->tts_tuples[0].t_data);
+	attno = Min(attno, attnum);
 
-	Vslot_deform_tuple(slot, attnum);
+	Vslot_deform_tuple(slot, attno);
 
 	/*
 	 * If tuple doesn't have all the atts indicated by tupleDesc, read the
 	 * rest as null
 	 */
-	for (; attnum < tdesc_natts; attnum++)
+	for (; attno < attnum; attno++)
 	{
-		slot->tts_values[attnum] = (Datum) 0;
-		slot->tts_isnull[attnum] = true;
+		slot->PRIVATE_tts_values[attno] = (Datum) 0;
+		slot->PRIVATE_tts_isnull[attno] = true;
 	}
-	slot->tts_nvalid = tdesc_natts;
+	slot->PRIVATE_tts_nvalid = attnum;
+	TupSetVirtualTuple(slot);
+}
+
+/*
+ * slot_getallattrs
+ *		This function forces all the entries of the slot's Datum/isnull
+ *		arrays to be valid.  The caller may then extract data directly
+ *		from those arrays instead of using slot_getattr.
+ */
+void
+Vslot_getallattrs(TupleTableSlot *slot)
+{
+	Vslot_getsomeattrs(slot, slot->tts_tupleDescriptor->natts);
 }
 
 
@@ -240,12 +246,27 @@ Vslot_getallattrs(TupleTableSlot *slot)
 void
 Vslot_getsomeattrs(TupleTableSlot *slot, int attnum)
 {
-	/* Quick out if we have 'em all already */
-	if (slot->tts_nvalid >= attnum)
+	if(TupHasVirtualTuple(slot))
+	{
+		if(slot->PRIVATE_tts_nvalid >= attnum)
+			return;
+	}
+
+	if(TupHasMemTuple(slot))
+	{
+		int i; 
+		for(i=0; i<attnum; ++i)
+			slot->PRIVATE_tts_values[i] = memtuple_getattr(
+					slot->PRIVATE_tts_memtuple, slot->tts_mt_bind, 
+					i+1, &(slot->PRIVATE_tts_isnull[i]));
+
+		TupSetVirtualTuple(slot);
+		slot->PRIVATE_tts_nvalid = attnum;
 		return;
+	}
 
-	elog(ERROR, "slot should be deformed in scan for vectorize engine");
-
+	_vslot_getsomeattrs(slot, attnum); 
+	TupSetVirtualTuple(slot);
 }
 
 
@@ -268,19 +289,13 @@ VExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 	 */
 	Assert(slot != NULL);
 
-	vslot = (VectorTupleSlot *)slot;
 	/*
 	 * Free the old physical tuple if necessary.
 	 */
-	if (slot->tts_shouldFree)
-		heap_freetuple(slot->tts_tuple);
-	if (slot->tts_shouldFreeMin)
-		heap_free_minimal_tuple(slot->tts_mintuple);
+	free_heaptuple_memtuple(slot);
 
-	slot->tts_tuple = NULL;
-	slot->tts_mintuple = NULL;
-	slot->tts_shouldFree = false;
-	slot->tts_shouldFreeMin = false;
+	slot->PRIVATE_tts_flags = TTS_ISEMPTY;
+	slot->PRIVATE_tts_nvalid = 0;
 
 	/*
 	 * Drop the pin on the referenced buffer, if there is one.
@@ -289,14 +304,9 @@ VExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 		ReleaseBuffer(slot->tts_buffer);
 
 	slot->tts_buffer = InvalidBuffer;
-
-	/*
-	 * Mark it empty.
-	 */
-	slot->tts_isempty = true;
-	slot->tts_nvalid = 0;
-
+	
 	/* vectorize part  */
+	vslot = (VectorTupleSlot *)slot;
 	for(i = 0; i < vslot->bufnum; i++)
 	{
 		if(BufferIsValid(vslot->tts_buffers[i]))
@@ -310,7 +320,7 @@ VExecClearTuple(TupleTableSlot *slot)	/* slot in which to store tuple */
 
 	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
 	{
-		column = (vtype *)DatumGetPointer(slot->tts_values[i]);
+		column = (vtype *)DatumGetPointer(slot->PRIVATE_tts_values[i]);
 		column->dim = 0;
 	}
 
@@ -374,26 +384,26 @@ VExecStoreTuple(HeapTuple tuple,
 	/* passing shouldFree=true for a tuple on a disk page is not sane */
 	Assert(BufferIsValid(buffer) ? (!shouldFree) : true);
 
+	Assert(!is_memtuple((GenericTuple) tuple));
+
 	vslot = (VectorTupleSlot *)slot;
 	/*
 	 * Free any old physical tuple belonging to the slot.
 	 */
-	if (slot->tts_shouldFree)
-		heap_freetuple(slot->tts_tuple);
-	if (slot->tts_shouldFreeMin)
-		heap_free_minimal_tuple(slot->tts_mintuple);
+	free_heaptuple_memtuple(slot);
 
 	/*
 	 * Store the new tuple into the specified slot.
 	 */
-	slot->tts_isempty = false;
-	slot->tts_shouldFree = shouldFree;
-	slot->tts_shouldFreeMin = false;
+
+	/* Clear tts_flags, here isempty set to false */
+	slot->PRIVATE_tts_flags = shouldFree ? TTS_SHOULDFREE : 0;
+
+	/* store the tuple */
 	memcpy(&vslot->tts_tuples[vslot->dim], tuple, sizeof(HeapTupleData));
-	slot->tts_mintuple = NULL;
 
 	/* Mark extracted state invalid */
-	slot->tts_nvalid = 0;
+	slot->PRIVATE_tts_nvalid = 0;
 
 	/*
 	 * If tuple is on a disk page, keep the page pinned as long as we hold a
@@ -433,8 +443,8 @@ InitializeVectorSlotColumn(VectorTupleSlot *vslot)
 		typid = desc->attrs[i]->atttypid;
 		column = buildvtype(typid, BATCHSIZE, vslot->skip);
 		column->dim = 0;
-		vslot->tts.tts_values[i]  = PointerGetDatum(column);
-		/* tts_isnull not used yet */
-		vslot->tts.tts_isnull[i] = false;
+		vslot->tts.PRIVATE_tts_values[i]  = PointerGetDatum(column);
+		/* PRIVATE_tts_isnull not used yet */
+		vslot->tts.PRIVATE_tts_isnull[i] = false;
 	}
 }

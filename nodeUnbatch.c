@@ -116,8 +116,8 @@ FetchRowFromBatch(UnbatchState *ubs)
 	natts = slot->tts_tupleDescriptor->natts;
 	for(i = 0; i < natts; i++)
 	{
-		slot->tts_values[i] = ((vtype*)(vslot->tts.tts_values[i]))->values[iter];
-		slot->tts_isnull[i] = false;
+		slot->PRIVATE_tts_values[i] = ((vtype*)(vslot->tts.PRIVATE_tts_values[i]))->values[iter];
+		slot->PRIVATE_tts_isnull[i] = false;
 	}
 
 	ubs->iter = ++iter;
@@ -201,6 +201,8 @@ AddUnbatchNodeAtTop(Plan *node)
 {
     CustomScan *convert = makeNode(CustomScan);
     convert->methods = &unbatch_methods;
+	convert->scan.plan.dispatch = node->dispatch;
+	convert->scan.plan.flow = node->flow;
 	convert->scan.plan.lefttree = node;
     convert->scan.plan.righttree = NULL;
 	return &convert->scan.plan;

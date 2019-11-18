@@ -16,7 +16,7 @@
 
 #include "nodeUnbatch.h"
 #include "nodeSeqscan.h"
-#include "nodeAgg.h"
+//#include "nodeAgg.h"
 #include "plan.h"
 
 PG_MODULE_MAGIC;
@@ -71,7 +71,7 @@ vector_post_planner(Query	*parse,
 		 * vectorize executor exchange batch of tuples between plan nodes
 		 * add unbatch node at top to convert batch to row and send to client.
 		 */
-		stmt->planTree = AddUnbatchNodeAtTop(stmt->planTree);
+		//stmt->planTree = AddUnbatchNodeAtTop(stmt->planTree);
 	}
 	PG_CATCH();
 	{
@@ -98,7 +98,7 @@ _PG_init(void)
 
 	/* Register customscan node for vectorized scan and agg */
 	InitVectorScan();
-	InitVectorAgg();
+	//InitVectorAgg();
 	InitUnbatch();
 
     /* planner hook registration */

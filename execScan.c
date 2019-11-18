@@ -7,6 +7,8 @@
  *	  stuff - checking the qualification and projecting the tuple
  *	  appropriately.
  *
+ * Portions Copyright (c) 2006 - present, EMC/Greenplum
+ * Portions Copyright (c) 2012-Present Pivotal Software, Inc.
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -21,10 +23,10 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
-
 #include "executor.h"
 #include "nodeSeqscan.h"
 #include "vectorTupleSlot.h"
+
 
 /*
  * ExecScanFetch -- fetch next potential tuple
@@ -38,10 +40,8 @@ ExecScanFetch(VectorScanState *vss,
 			  VExecScanAccessMtd accessMtd,
 			  VExecScanRecheckMtd recheckMtd)
 {
-	EState			*estate;
-	SeqScanState	*node = vss->seqstate;
-	
-	estate = node->ss.ps.state;
+	ScanState	*node = &vss->seqstate->ss;
+	EState     *estate = node->ps.state;
 
 	if (estate->es_epqTuple != NULL)
 	{
@@ -50,11 +50,11 @@ ExecScanFetch(VectorScanState *vss,
 		 * one is available, after rechecking any access-method-specific
 		 * conditions.
 		 */
-		Index		scanrelid = ((Scan *) node->ss.ps.plan)->scanrelid;
+		Index		scanrelid = ((Scan *) node->ps.plan)->scanrelid;
 
 		if (scanrelid == 0)
 		{
-			TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+			TupleTableSlot *slot = node->ss_ScanTupleSlot;
 
 			/*
 			 * This is a ForeignScan or CustomScan which has pushed down a
@@ -68,7 +68,7 @@ ExecScanFetch(VectorScanState *vss,
 		}
 		else if (estate->es_epqTupleSet[scanrelid - 1])
 		{
-			TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+			TupleTableSlot *slot = node->ss_ScanTupleSlot;
 
 			/* Return empty slot if we already returned a tuple */
 			if (estate->es_epqScanDone[scanrelid - 1])
@@ -81,7 +81,7 @@ ExecScanFetch(VectorScanState *vss,
 				return ExecClearTuple(slot);
 
 			/* Store test tuple in the plan node's scan slot */
-			ExecStoreTuple(estate->es_epqTuple[scanrelid - 1],
+			ExecStoreHeapTuple(estate->es_epqTuple[scanrelid - 1],
 						   slot, InvalidBuffer, false);
 
 			/* Check if it meets the access-method conditions */
@@ -125,10 +125,9 @@ VExecScan(VectorScanState *vss,
 		 VExecScanAccessMtd accessMtd,	/* function returning a tuple */
 		 VExecScanRecheckMtd recheckMtd)
 {
-	ExprContext		*econtext;
-	List			*qual;
-	ProjectionInfo	*projInfo;
-	ExprDoneCond	isDone;
+	ExprContext *econtext;
+	List	   *qual;
+	ProjectionInfo *projInfo;
 	TupleTableSlot	*resultSlot;
 	ScanState 		*node;
 	
@@ -152,24 +151,8 @@ VExecScan(VectorScanState *vss,
 	}
 
 	/*
-	 * Check to see if we're still projecting out tuples from a previous scan
-	 * tuple (because there is a function-returning-set in the projection
-	 * expressions).  If so, try to project another one.
-	 */
-	if (node->ps.ps_TupFromTlist)
-	{
-		Assert(projInfo);		/* can't get here if not projecting */
-		resultSlot = ExecProject(projInfo, &isDone);
-		if (isDone == ExprMultipleResult)
-			return resultSlot;
-		/* Done with that source tuple... */
-		node->ps.ps_TupFromTlist = false;
-	}
-
-	/*
 	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.  Note this can't happen
-	 * until we're done projecting out tuples from a scan tuple.
+	 * storage allocated in the previous tuple cycle.
 	 */
 	ResetExprContext(econtext);
 
@@ -182,6 +165,9 @@ VExecScan(VectorScanState *vss,
 		TupleTableSlot *slot;
 
 		CHECK_FOR_INTERRUPTS();
+
+		if (QueryFinishPending)
+			return NULL;
 
 		slot = ExecScanFetch(vss, accessMtd, recheckMtd);
 
@@ -220,16 +206,11 @@ VExecScan(VectorScanState *vss,
 			{
 				/*
 				 * Form a projection tuple, store it in the result tuple slot
-				 * and return it --- unless we find we can project no tuples
-				 * from this scan tuple, in which case continue scan.
+				 * and return it.
 				 */
-				resultSlot = ExecProject(projInfo, &isDone);
+				resultSlot = ExecProject(projInfo, NULL);
 				memcpy(((VectorTupleSlot*)resultSlot)->skip, ((VectorTupleSlot*)slot)->skip, sizeof(bool) * BATCHSIZE);
-				if (isDone != ExprEndResult)
-				{
-					node->ps.ps_TupFromTlist = (isDone == ExprMultipleResult);
-					return resultSlot;
-				}
+				return resultSlot;
 			}
 			else
 			{

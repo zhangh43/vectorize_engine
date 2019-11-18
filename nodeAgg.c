@@ -631,9 +631,9 @@ InitAggResultSlot(VectorAggState *vas, EState *estate)
 
 		typid = vas->resultSlot->tts_tupleDescriptor->attrs[i]->atttypid;
 		column = buildvtype(typid, BATCHSIZE, vslot->skip);
-		vas->resultSlot->tts_values[i]  = PointerGetDatum(column);
-		/* tts_isnull not used yet */
-		vas->resultSlot->tts_isnull[i] = false;
+		vas->resultSlot->PRIVATE_tts_values[i]  = PointerGetDatum(column);
+		/* PRIVATE_tts_isnull not used yet */
+		vas->resultSlot->PRIVATE_tts_isnull[i] = false;
 	}
 }
 
@@ -692,7 +692,7 @@ Vadvance_aggregates(AggState *aggstate, AggHashEntry *entries)
 			{
 				for (i = 0; i < numTransInputs; i++)
 				{
-					if (slot->tts_isnull[i])
+					if (slot->PRIVATE_tts_isnull[i])
 						break;
 				}
 				if (i < numTransInputs)
@@ -704,8 +704,8 @@ Vadvance_aggregates(AggState *aggstate, AggHashEntry *entries)
 				/* OK, put the tuple into the tuplesort object */
 				if (pertrans->numInputs == 1)
 					tuplesort_putdatum(pertrans->sortstates[setno],
-									   slot->tts_values[0],
-									   slot->tts_isnull[0]);
+									   slot->PRIVATE_tts_values[0],
+									   slot->PRIVATE_tts_isnull[0]);
 				else
 					tuplesort_puttupleslot(pertrans->sortstates[setno], slot);
 			}
@@ -720,8 +720,8 @@ Vadvance_aggregates(AggState *aggstate, AggHashEntry *entries)
 			Assert(slot->tts_nvalid >= numTransInputs);
 			for (i = 0; i < numTransInputs; i++)
 			{
-				fcinfo->arg[i + 2] = slot->tts_values[i];
-				fcinfo->argnull[i + 2] = slot->tts_isnull[i];
+				fcinfo->arg[i + 2] = slot->PRIVATE_tts_values[i];
+				fcinfo->argnull[i + 2] = slot->PRIVATE_tts_isnull[i];
 			}
 
 			for (setno = 0; setno < numGroupingSets; setno++)
@@ -1209,7 +1209,7 @@ advance_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 			{
 				for (i = 0; i < numTransInputs; i++)
 				{
-					if (slot->tts_isnull[i])
+					if (slot->PRIVATE_tts_isnull[i])
 						break;
 				}
 				if (i < numTransInputs)
@@ -1221,8 +1221,8 @@ advance_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 				/* OK, put the tuple into the tuplesort object */
 				if (pertrans->numInputs == 1)
 					tuplesort_putdatum(pertrans->sortstates[setno],
-									   slot->tts_values[0],
-									   slot->tts_isnull[0]);
+									   slot->PRIVATE_tts_values[0],
+									   slot->PRIVATE_tts_isnull[0]);
 				else
 					tuplesort_puttupleslot(pertrans->sortstates[setno], slot);
 			}
@@ -1243,8 +1243,8 @@ advance_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 			fcinfo->argnull[1] = false;
 			for (i = 0; i < numTransInputs; i++)
 			{
-				fcinfo->arg[i + 2] = slot->tts_values[i];
-				fcinfo->argnull[i + 2] = slot->tts_isnull[i];
+				fcinfo->arg[i + 2] = slot->PRIVATE_tts_values[i];
+				fcinfo->argnull[i + 2] = slot->PRIVATE_tts_isnull[i];
 			}
 
 			for (setno = 0; setno < numGroupingSets; setno++)
@@ -1293,18 +1293,18 @@ combine_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 		if (OidIsValid(pertrans->deserialfn_oid))
 		{
 			/* Don't call a strict deserialization function with NULL input */
-			if (pertrans->deserialfn.fn_strict && slot->tts_isnull[0])
+			if (pertrans->deserialfn.fn_strict && slot->PRIVATE_tts_isnull[0])
 			{
-				fcinfo->arg[1] = slot->tts_values[0];
-				fcinfo->argnull[1] = slot->tts_isnull[0];
+				fcinfo->arg[1] = slot->PRIVATE_tts_values[0];
+				fcinfo->argnull[1] = slot->PRIVATE_tts_isnull[0];
 			}
 			else
 			{
 				FunctionCallInfo dsinfo = &pertrans->deserialfn_fcinfo;
 				MemoryContext oldContext;
 
-				dsinfo->arg[0] = slot->tts_values[0];
-				dsinfo->argnull[0] = slot->tts_isnull[0];
+				dsinfo->arg[0] = slot->PRIVATE_tts_values[0];
+				dsinfo->argnull[0] = slot->PRIVATE_tts_isnull[0];
 				/* Dummy second argument for type-safety reasons */
 				dsinfo->arg[1] = PointerGetDatum(NULL);
 				dsinfo->argnull[1] = false;
@@ -1323,8 +1323,8 @@ combine_aggregates(AggState *aggstate, AggStatePerGroup pergroup)
 		}
 		else
 		{
-			fcinfo->arg[1] = slot->tts_values[0];
-			fcinfo->argnull[1] = slot->tts_isnull[0];
+			fcinfo->arg[1] = slot->PRIVATE_tts_values[0];
+			fcinfo->argnull[1] = slot->PRIVATE_tts_isnull[0];
 		}
 
 		advance_combine_function(aggstate, pertrans, pergroupstate);
@@ -1610,8 +1610,8 @@ process_ordered_aggregate_multi(AggState *aggstate,
 			/* Start from 1, since the 0th arg will be the transition value */
 			for (i = 0; i < numTransInputs; i++)
 			{
-				fcinfo->arg[i + 1] = slot1->tts_values[i];
-				fcinfo->argnull[i + 1] = slot1->tts_isnull[i];
+				fcinfo->arg[i + 1] = slot1->PRIVATE_tts_values[i];
+				fcinfo->argnull[i + 1] = slot1->PRIVATE_tts_isnull[i];
 			}
 
 			advance_transition_function(aggstate, pertrans, pergroupstate);
@@ -1867,7 +1867,7 @@ prepare_projection_slot(AggState *aggstate, TupleTableSlot *slot, int currentSet
 				int			attnum = lfirst_int(lc);
 
 				if (!bms_is_member(attnum, grouped_cols))
-					slot->tts_isnull[attnum - 1] = true;
+					slot->PRIVATE_tts_isnull[attnum - 1] = true;
 			}
 		}
 	}
@@ -2153,9 +2153,9 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 		{
 			vtype *column;
 			int			varNumber = lfirst_int(l) - 1;
-			column = (vtype *)DatumGetPointer(inputslot->tts_values[varNumber]);
-			hashslot->tts_values[varNumber] = column->values[i];
-			hashslot->tts_isnull[varNumber] = column->isnull[i];
+			column = (vtype *)DatumGetPointer(inputslot->PRIVATE_tts_values[varNumber]);
+			hashslot->PRIVATE_tts_values[varNumber] = column->values[i];
+			hashslot->PRIVATE_tts_isnull[varNumber] = column->isnull[i];
 		}
 
 		/* find or create the hashtable entry using the filtered tuple */
@@ -2563,8 +2563,8 @@ agg_retrieve_direct(VectorAggState *vas)
 
 		for(i = 0; i < vdesc->natts; i++)
 		{
-			column = (vtype *)DatumGetPointer(vslot->tts.tts_values[i]);
-			column->values[0] = result->tts_values[i];
+			column = (vtype *)DatumGetPointer(vslot->tts.PRIVATE_tts_values[i]);
+			column->values[0] = result->PRIVATE_tts_values[i];
 		}
 		vslot->skip[0] = false;
 		ExecStoreVirtualTuple((TupleTableSlot *)vslot);
@@ -2706,8 +2706,8 @@ agg_retrieve_hash_table(VectorAggState *vas)
 		result = project_aggregates(aggstate);
 		for(i = 0; i < vdesc->natts; i++)
 		{
-			column = (vtype *)DatumGetPointer(vslot->tts.tts_values[i]);
-			column->values[row] = result->tts_values[i];
+			column = (vtype *)DatumGetPointer(vslot->tts.PRIVATE_tts_values[i]);
+			column->values[row] = result->PRIVATE_tts_values[i];
 		}
 		row++;
 

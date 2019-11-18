@@ -24,7 +24,8 @@
 
 #include "plan.h"
 #include "nodeSeqscan.h"
-#include "nodeAgg.h"
+#include "nodeUnbatch.h"
+//#include "nodeAgg.h"
 #include "utils.h"
 
 static void mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context);
@@ -251,16 +252,26 @@ plan_tree_mutator(Node *node,
 				cscan = MakeCustomScanForSeqScan();
 				FLATCOPY(vscan, node, SeqScan);
 				cscan->custom_plans = lappend(cscan->custom_plans, vscan);
+				cscan->scan.plan.flow = vscan->plan.flow;
 
 				SCANMUTATE(vscan, node);
 				return (Node *)cscan;
 			}
-
+		case T_Motion:
+			{
+				Motion	*motion = (Motion *)node;
+				/* keep motion node unvectorized */
+				MUTATE(((Plan *)node)->lefttree, ((Plan *)node)->lefttree, Plan *);
+				MUTATE(((Plan *)node)->righttree, ((Plan *)node)->righttree, Plan *);
+				MUTATE(((Plan *)node)->initPlan, ((Plan *)node)->initPlan, List *);
+				motion->plan.lefttree = AddUnbatchNodeAtTop(motion->plan.lefttree);
+				return (Node *)motion;
+			}
+#if 0	
 		case T_Agg:
 			{
 				CustomScan	*cscan;
 				Agg			*vagg;
-	
 				if (((Agg *)node)->aggstrategy != AGG_PLAIN && ((Agg *)node)->aggstrategy != AGG_HASHED)
 					elog(ERROR, "Non plain agg is not supported");
 
@@ -271,6 +282,7 @@ plan_tree_mutator(Node *node,
 				SCANMUTATE(vagg, node);
 				return (Node *)cscan;
 			}
+#endif
 		case T_Const:
 			{
 				Const	   *oldnode = (Const *) node;

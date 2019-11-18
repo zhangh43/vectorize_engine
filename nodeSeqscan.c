@@ -3,6 +3,8 @@
  * nodeSeqscan.c
  *	  Support routines for sequential scans of relations.
  *
+ * In GPDB, this also deals with AppendOnly and AOCS tables.
+ *
  * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -31,6 +33,13 @@
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
 
+#include "cdb/cdbappendonlyam.h"
+#include "cdb/cdbaocsam.h"
+#include "utils/snapmgr.h"
+
+static void InitAOCSScanOpaque(SeqScanState *scanState, Relation currentRelation);
+
+
 /*-------------------------- Vectorize part of nodeSeqScan ---------------------------------*/
 #include "nodes/extensible.h"
 #include "executor/nodeCustom.h"
@@ -58,9 +67,11 @@ static TupleTableSlot *VExecSeqScan(VectorScanState *vss);
 static void VExecEndSeqScan(VectorScanState *vss);
 static void VExecReScanSeqScan(VectorScanState *vss);
 
-static void VInitScanRelation(SeqScanState *node, EState *estate, int eflags);
+static void VInitScanRelation(SeqScanState *node, EState *estate, int eflags, Relation currentRelation);
 static TupleTableSlot *VSeqNext(VectorScanState *vss);
 static bool VSeqRecheck(VectorScanState *node, TupleTableSlot *slot);
+static SeqScanState *VExecInitSeqScanForPartition(SeqScan *node, EState *estate, int eflags,
+							Relation currentRelation);
 
 static CustomScanMethods	vectorscan_scan_methods = {
 	"vectorscan",			/* CustomName */
@@ -189,7 +200,6 @@ InitVectorScan(void)
 
 /*---------------------- End of vectorized part of nodeSeqscan ---------------------------*/
 
-
 /* ----------------------------------------------------------------
  *						Scan Support
  * ----------------------------------------------------------------
@@ -205,7 +215,6 @@ static TupleTableSlot *
 VSeqNext(VectorScanState *vss)
 {
 	HeapTuple	tuple;
-	HeapScanDesc scandesc;
 	EState	   *estate;
 	ScanDirection direction;
 	TupleTableSlot *slot;
@@ -216,75 +225,141 @@ VSeqNext(VectorScanState *vss)
 	/*
 	 * get information from the estate and scan state
 	 */
-	scandesc = node->ss.ss_currentScanDesc;
 	estate = node->ss.ps.state;
 	direction = estate->es_direction;
 	slot = node->ss.ss_ScanTupleSlot;
 
-	if (scandesc == NULL)
+	if (node->ss_currentScanDesc_ao == NULL &&
+		node->ss_currentScanDesc_aocs == NULL &&
+		node->ss_currentScanDesc_heap == NULL)
 	{
 		/*
-		 * We reach here if the scan is not parallel, or if we're serially
-		 * executing a scan that was planned to be parallel.
+		 * We reach here if the scan is not parallel, or if we're executing a
+		 * scan that was intended to be parallel serially.
 		 */
-		scandesc = heap_beginscan(node->ss.ss_currentRelation,
-								  estate->es_snapshot,
-								  0, NULL);
-		node->ss.ss_currentScanDesc = scandesc;
-	}
+		Relation currentRelation = node->ss.ss_currentRelation;
 
-	vslot = (VectorTupleSlot *)slot;
+		if (RelationIsAoRows(currentRelation))
+		{
+			Snapshot appendOnlyMetaDataSnapshot;
 
-	/* return the last batch. */
-	if (vss->scanFinish)
-	{
-		VExecClearTuple(slot);
-		return slot;
-	}
-	VExecClearTuple(slot);
+			appendOnlyMetaDataSnapshot = node->ss.ps.state->es_snapshot;
+			if (appendOnlyMetaDataSnapshot == SnapshotAny)
+			{
+				/*
+				 * the append-only meta data should never be fetched with
+				 * SnapshotAny as bogus results are returned.
+				 */
+				appendOnlyMetaDataSnapshot = GetTransactionSnapshot();
+			}
 
-	/* fetch a batch of rows and fill them into VectorTupleSlot */
-	for (row = 0 ; row < BATCHSIZE; row++)
-	{
-		/*
-		 * get the next tuple from the table
-		 */
-		tuple = heap_getnext(scandesc, direction);
+			node->ss_currentScanDesc_ao = appendonly_beginscan(
+				currentRelation,
+				node->ss.ps.state->es_snapshot,
+				appendOnlyMetaDataSnapshot,
+				0, NULL);
+		}
+		else if (RelationIsAoCols(currentRelation))
+		{
+			Snapshot appendOnlyMetaDataSnapshot;
 
-		/*
-		 * save the tuple and the buffer returned to us by the access methods in
-		 * our scan tuple slot and return the slot.  Note: we pass 'false' because
-		 * tuples returned by heap_getnext() are pointers onto disk pages and were
-		 * not created with palloc() and so should not be pfree()'d.  Note also
-		 * that ExecStoreTuple will increment the refcount of the buffer; the
-		 * refcount will not be dropped until the tuple table slot is cleared.
-		 */
-		if (tuple)
-			VExecStoreTuple(tuple,	/* tuple to store */
-					slot,	/* slot to store in */
-					scandesc->rs_cbuf,		/* buffer associated with this
-											 * tuple */
-					false);	/* don't pfree this pointer */
+			InitAOCSScanOpaque(node, currentRelation);
+
+			appendOnlyMetaDataSnapshot = node->ss.ps.state->es_snapshot;
+			if (appendOnlyMetaDataSnapshot == SnapshotAny)
+			{
+				/*
+				 * the append-only meta data should never be fetched with
+				 * SnapshotAny as bogus results are returned.
+				 */
+				appendOnlyMetaDataSnapshot = GetTransactionSnapshot();
+			}
+
+			node->ss_currentScanDesc_aocs =
+				aocs_beginscan(currentRelation,
+							   node->ss.ps.state->es_snapshot,
+							   appendOnlyMetaDataSnapshot,
+							   NULL /* relationTupleDesc */,
+							   node->ss_aocs_proj);
+		}
 		else
 		{
-			/* scan finish, but we still need to emit current vslot */
-			vss->scanFinish = true;
-			break;
+			node->ss_currentScanDesc_heap = heap_beginscan(currentRelation,
+														   estate->es_snapshot,
+														   0, NULL);
 		}
 	}
 
+
 	/*
-	 * deform and generate virtual tuple
-	 * TODO: late deform to avoid deform unneccessary columns.
+	 * get the next tuple from the table
 	 */
-	if (row > 0)
+	if (node->ss_currentScanDesc_ao)
 	{
-		vslot->dim = row;
-		memset(vslot->skip, false, sizeof(bool) * row);
-		
-		/* deform the vector slot now */
-		Vslot_getallattrs(slot);
-		ExecStoreVirtualTuple(slot);
+		elog(ERROR, "vectorize ao not supported");
+		appendonly_getnext(node->ss_currentScanDesc_ao, direction, slot);
+	}
+	else if (node->ss_currentScanDesc_aocs)
+	{
+		elog(ERROR, "vectorize aocs not supported");
+		aocs_getnext(node->ss_currentScanDesc_aocs, direction, slot);
+	}
+	else
+	{
+		HeapScanDesc scandesc = node->ss_currentScanDesc_heap;
+		vslot = (VectorTupleSlot *)slot;
+
+		/* return the last batch. */
+		if (vss->scanFinish)
+		{
+			VExecClearTuple(slot);
+			return slot;
+		}
+		VExecClearTuple(slot);
+
+		/* fetch a batch of rows and fill them into VectorTupleSlot */
+		for (row = 0 ; row < BATCHSIZE; row++)
+		{
+			/*
+			 * get the next tuple from the table
+			 */
+			tuple = heap_getnext(scandesc, direction);
+
+			/*
+			 * save the tuple and the buffer returned to us by the access methods in
+			 * our scan tuple slot and return the slot.  Note: we pass 'false' because
+			 * tuples returned by heap_getnext() are pointers onto disk pages and were
+			 * not created with palloc() and so should not be pfree()'d.  Note also
+			 * that ExecStoreTuple will increment the refcount of the buffer; the
+			 * refcount will not be dropped until the tuple table slot is cleared.
+			 */
+			if (tuple)
+				VExecStoreTuple(tuple,	/* tuple to store */
+						slot,	/* slot to store in */
+						scandesc->rs_cbuf,		/* buffer associated with this
+												 * tuple */
+						false);	/* don't pfree this pointer */
+			else
+			{
+				/* scan finish, but we still need to emit current vslot */
+				vss->scanFinish = true;
+				break;
+			}
+		}
+
+		/*
+		 * deform and generate virtual tuple
+		 * TODO: late deform to avoid deform unneccessary columns.
+		 */
+		if (row > 0)
+		{
+			vslot->dim = row;
+			memset(vslot->skip, false, sizeof(bool) * row);
+
+			/* deform the vector slot now */
+			Vslot_getallattrs(slot);
+			ExecStoreVirtualTuple(slot);
+		}
 	}
 
 	return slot;
@@ -327,20 +402,12 @@ VExecSeqScan(VectorScanState *node)
  * ----------------------------------------------------------------
  */
 static void
-VInitScanRelation(SeqScanState *node, EState *estate, int eflags)
+VInitScanRelation(SeqScanState *node, EState *estate, int eflags, Relation currentRelation)
 {
-	Relation	currentRelation;
 	TupleDesc	vdesc;
 	TupleTableSlot *slot;
 	int 		i;
 
-	/*
-	 * get the relation object id from the relid'th entry in the range table,
-	 * open that relation and acquire appropriate lock on it.
-	 */
-	currentRelation = ExecOpenScanRelation(estate,
-								   ((SeqScan *) node->ss.ps.plan)->scanrelid,
-										   eflags);
 
 	node->ss.ss_currentRelation = currentRelation;
 
@@ -369,12 +436,28 @@ VInitScanRelation(SeqScanState *node, EState *estate, int eflags)
 	InitializeVectorSlotColumn((VectorTupleSlot *)slot);
 }
 
+
 /* ----------------------------------------------------------------
  *		ExecInitSeqScan
  * ----------------------------------------------------------------
  */
-static SeqScanState *
+SeqScanState *
 VExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
+{
+	Relation	currentRelation;
+
+	/*
+	 * get the relation object id from the relid'th entry in the range table,
+	 * open that relation and acquire appropriate lock on it.
+	 */
+	currentRelation = ExecOpenScanRelation(estate, node->scanrelid, eflags);
+
+	return VExecInitSeqScanForPartition(node, estate, eflags, currentRelation);
+}
+
+static SeqScanState *
+VExecInitSeqScanForPartition(SeqScan *node, EState *estate, int eflags,
+							Relation currentRelation)
 {
 	SeqScanState *scanstate;
 
@@ -418,9 +501,7 @@ VExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	/*
 	 * initialize scan relation
 	 */
-	VInitScanRelation(scanstate, estate, eflags);
-
-	scanstate->ss.ps.ps_TupFromTlist = false;
+	VInitScanRelation(scanstate, estate, eflags, currentRelation);
 
 	/*
 	 * Initialize result tuple type and projection info.
@@ -441,14 +522,12 @@ static void
 VExecEndSeqScan(VectorScanState *vss)
 {
 	Relation	relation;
-	HeapScanDesc scanDesc;
 	SeqScanState *node = vss->seqstate;
 
 	/*
 	 * get information from node
 	 */
 	relation = node->ss.ss_currentRelation;
-	scanDesc = node->ss.ss_currentScanDesc;
 
 	/*
 	 * Free the exprcontext
@@ -464,8 +543,21 @@ VExecEndSeqScan(VectorScanState *vss)
 	/*
 	 * close heap scan
 	 */
-	if (scanDesc != NULL)
-		heap_endscan(scanDesc);
+	if (node->ss_currentScanDesc_heap)
+	{
+		heap_endscan(node->ss_currentScanDesc_heap);
+		node->ss_currentScanDesc_heap = NULL;
+	}
+	if (node->ss_currentScanDesc_ao)
+	{
+		appendonly_endscan(node->ss_currentScanDesc_ao);
+		node->ss_currentScanDesc_ao = NULL;
+	}
+	if (node->ss_currentScanDesc_aocs)
+	{
+		aocs_endscan(node->ss_currentScanDesc_aocs);
+		node->ss_currentScanDesc_aocs = NULL;
+	}
 
 	/*
 	 * close the heap relation.
@@ -488,4 +580,36 @@ static void
 VExecReScanSeqScan(VectorScanState *vss)
 {
 	elog(ERROR, "vectorize rescan not implemented yet.");
+}
+
+static void
+InitAOCSScanOpaque(SeqScanState *scanstate, Relation currentRelation)
+{
+	/* Initialize AOCS projection info */
+	bool	   *proj;
+	int			ncol;
+	int			i;
+
+	Assert(currentRelation != NULL);
+
+	ncol = currentRelation->rd_att->natts;
+	proj = palloc0(ncol * sizeof(bool));
+	GetNeededColumnsForScan((Node *) scanstate->ss.ps.plan->targetlist, proj, ncol);
+	GetNeededColumnsForScan((Node *) scanstate->ss.ps.plan->qual, proj, ncol);
+
+	for (i = 0; i < ncol; i++)
+	{
+		if (proj[i])
+			break;
+	}
+
+	/*
+	 * In some cases (for example, count(*)), no columns are specified.
+	 * We always scan the first column.
+	 */
+	if (i == ncol)
+		proj[0] = true;
+
+	scanstate->ss_aocs_ncol = ncol;
+	scanstate->ss_aocs_proj = proj;
 }
