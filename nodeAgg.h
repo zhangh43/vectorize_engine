@@ -29,5 +29,7 @@ typedef struct VectorAggState
 
 extern CustomScan *MakeCustomScanForAgg(void);
 extern void InitVectorAgg(void);
-
+extern void vadvance_aggregates(AggState *aggstate, AggStatePerGroup *entries);
+extern void vcombine_aggregates(AggState *aggstate, AggStatePerGroup *entries);
+extern void vadvance_combine_function(AggState *aggstate, AggStatePerTrans pertrans, AggStatePerGroup *entries, FunctionCallInfo fcinfo);
 #endif   /* VECTOR_ENGINE_NODE_AGG_H */

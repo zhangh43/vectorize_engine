@@ -16,7 +16,7 @@
 
 #include "nodeUnbatch.h"
 #include "nodeSeqscan.h"
-//#include "nodeAgg.h"
+#include "nodeAgg.h"
 #include "plan.h"
 
 PG_MODULE_MAGIC;
@@ -98,7 +98,7 @@ _PG_init(void)
 
 	/* Register customscan node for vectorized scan and agg */
 	InitVectorScan();
-	//InitVectorAgg();
+	InitVectorAgg();
 	InitUnbatch();
 
     /* planner hook registration */

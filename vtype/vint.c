@@ -1,22 +1,49 @@
 #include "vint.h"
 #include "vtype.h"
 
+#include "nodes/execnodes.h"
+
 PG_FUNCTION_INFO_V1(vint8inc_any);
 PG_FUNCTION_INFO_V1(vint4_sum);
 PG_FUNCTION_INFO_V1(vint8inc);
+
+typedef struct AggStatePerGroupData
+{
+    Datum       transValue;     /* current transition value */
+    bool        transValueIsNull;
+
+    bool        noTransValue;   /* true if transValue not set yet */
+
+    /*
+     * Note: noTransValue initially has the same value as transValueIsNull,
+     * and if true both are cleared to false at the same time.  They are not
+     * the same though: if transfn later returns a NULL, we want to keep that
+     * NULL and not auto-replace it with a later input value. Only the first
+     * non-NULL input will be auto-substituted.
+     */
+} AggStatePerGroupData;
+
+typedef struct AggHashEntryData *AggHashEntry;
+
+typedef struct AggHashEntryData
+{
+    TupleHashEntryData shared;  /* common header for hash table entries */
+    /* per-aggregate transition status array */
+    AggStatePerGroupData pergroup[FLEXIBLE_ARRAY_MEMBER];
+}   AggHashEntryData;
+
 
 Datum vint8inc_any(PG_FUNCTION_ARGS)
 {
 	int64		result;
 	int64		arg;
 	int			i;
-	char		**entries;
+	AggStatePerGroup *entries;	
 	vtype		*batch;
-	Datum *transVal;
 	
-	int32 groupOffset = PG_GETARG_INT32(1);
+	int32 groupno = PG_GETARG_INT32(1);
 
-	if (groupOffset < 0)
+	if (groupno < 0)
 	{
 		/* Not called as an aggregate, so just do it the dumb way */
 		arg = PG_GETARG_INT64(0);
@@ -40,7 +67,7 @@ Datum vint8inc_any(PG_FUNCTION_ARGS)
 		PG_RETURN_INT64(result);
 	}
 
-	entries = (char **)PG_GETARG_POINTER(0);
+	entries = (AggStatePerGroup *)PG_GETARG_POINTER(0);
 	batch = (vtype *) PG_GETARG_POINTER(2);
 
 	for (i = 0; i < BATCHSIZE; i++)
@@ -48,9 +75,7 @@ Datum vint8inc_any(PG_FUNCTION_ARGS)
 		if (batch->skipref[i])
 			continue;
 
-		transVal = (Datum *)(entries[i] + groupOffset);	
-
-		arg = DatumGetInt64(*transVal);
+		arg = DatumGetInt64(entries[i][groupno].transValue);
 		result = arg + 1;
 		/* Overflow check */
 		if (result < 0 && arg > 0)
@@ -58,7 +83,7 @@ Datum vint8inc_any(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 					 errmsg("bigint out of range")));
 
-		*transVal = Int64GetDatum(result);
+		entries[i][groupno].transValue = Int64GetDatum(result);
 	}
 
 	PG_RETURN_INT64(0);

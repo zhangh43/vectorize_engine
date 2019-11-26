@@ -12,6 +12,7 @@
 #include "parser/parse_func.h"
 #include "parser/parse_coerce.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodes.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
@@ -25,11 +26,12 @@
 #include "plan.h"
 #include "nodeSeqscan.h"
 #include "nodeUnbatch.h"
-//#include "nodeAgg.h"
+#include "nodeAgg.h"
 #include "utils.h"
 
 static void mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context);
 static Node * plan_tree_mutator(Node *node, Node *(*mutator) (), void *context);
+static bool has_motion_child(Plan *node);
 
 /*
  * We check the expressions tree recursively becuase the args can be a sub expression,
@@ -253,36 +255,50 @@ plan_tree_mutator(Node *node,
 				FLATCOPY(vscan, node, SeqScan);
 				cscan->custom_plans = lappend(cscan->custom_plans, vscan);
 				cscan->scan.plan.flow = vscan->plan.flow;
+				cscan->scan.plan.lefttree = vscan->plan.lefttree;
+				cscan->scan.plan.righttree = vscan->plan.righttree;
 
 				SCANMUTATE(vscan, node);
 				return (Node *)cscan;
 			}
 		case T_Motion:
 			{
-				Motion	*motion = (Motion *)node;
+				Motion	*motion = (Motion *) node;
+				Motion	*newmotion;
+				FLATCOPY(newmotion, motion, Motion);
 				/* keep motion node unvectorized */
-				MUTATE(((Plan *)node)->lefttree, ((Plan *)node)->lefttree, Plan *);
-				MUTATE(((Plan *)node)->righttree, ((Plan *)node)->righttree, Plan *);
-				MUTATE(((Plan *)node)->initPlan, ((Plan *)node)->initPlan, List *);
-				motion->plan.lefttree = AddUnbatchNodeAtTop(motion->plan.lefttree);
-				return (Node *)motion;
+				MUTATE(((Plan *)newmotion)->lefttree, ((Plan *)motion)->lefttree, Plan *);
+				MUTATE(((Plan *)newmotion)->righttree, ((Plan *)motion)->righttree, Plan *);
+				MUTATE(((Plan *)newmotion)->initPlan, ((Plan *)motion)->initPlan, List *);
+
+				if (!has_motion_child((Plan *)newmotion))
+					newmotion->plan.lefttree = AddUnbatchNodeAtTop(newmotion->plan.lefttree);
+				return (Node *)newmotion;
 			}
-#if 0	
 		case T_Agg:
 			{
 				CustomScan	*cscan;
 				Agg			*vagg;
 				if (((Agg *)node)->aggstrategy != AGG_PLAIN && ((Agg *)node)->aggstrategy != AGG_HASHED)
 					elog(ERROR, "Non plain agg is not supported");
-
+				if (has_motion_child((Plan *)node))
+				{
+					FLATCOPY(vagg, node, Agg);
+					MUTATE(((Plan *)vagg)->lefttree, ((Plan *)node)->lefttree, Plan *);
+					MUTATE(((Plan *)vagg)->righttree, ((Plan *)node)->righttree, Plan *);
+					MUTATE(((Plan *)vagg)->initPlan, ((Plan *)node)->initPlan, List *);
+					return (Node *)vagg;
+				}
 				cscan = MakeCustomScanForAgg();
 				FLATCOPY(vagg, node, Agg);
 				cscan->custom_plans = lappend(cscan->custom_plans, vagg);
+				cscan->scan.plan.flow = vagg->plan.flow;
+				cscan->scan.plan.lefttree = vagg->plan.lefttree;
+				cscan->scan.plan.righttree = vagg->plan.righttree;
 
 				SCANMUTATE(vagg, node);
 				return (Node *)cscan;
 			}
-#endif
 		case T_Const:
 			{
 				Const	   *oldnode = (Const *) node;
@@ -399,6 +415,24 @@ mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *cont
 	newplan->allParam = bms_copy(oldplan->allParam);
 }
 
+static bool
+has_motion_child(Plan *node)
+{
+	bool	hasMotion = false;
+	Plan	*childplan;
+
+	childplan = node->lefttree;
+	while (childplan != NULL)
+	{
+		if (childplan->type == T_Motion)
+		{
+			hasMotion = true;
+			break;
+		}
+		childplan = childplan->lefttree;
+	}
+	return hasMotion;
+}
 /*
  * Replace the non-vectorirzed type to vectorized type
  */

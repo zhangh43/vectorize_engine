@@ -3,11 +3,38 @@
 #include "math.h"
 #include "utils/array.h"
 #include "catalog/pg_type.h"
+#include "nodes/execnodes.h"
 
 PG_FUNCTION_INFO_V1(vfloat8vfloat8mul2);
 PG_FUNCTION_INFO_V1(vfloat8pl);
 PG_FUNCTION_INFO_V1(vfloat8_accum);
 PG_FUNCTION_INFO_V1(vfloat8_avg);
+PG_FUNCTION_INFO_V1(vfloat8_combine);
+
+typedef struct AggStatePerGroupData
+{
+    Datum       transValue;     /* current transition value */
+    bool        transValueIsNull;
+
+    bool        noTransValue;   /* true if transValue not set yet */
+
+    /*
+     * Note: noTransValue initially has the same value as transValueIsNull,
+     * and if true both are cleared to false at the same time.  They are not
+     * the same though: if transfn later returns a NULL, we want to keep that
+     * NULL and not auto-replace it with a later input value. Only the first
+     * non-NULL input will be auto-substituted.
+     */
+} AggStatePerGroupData;
+
+typedef struct AggHashEntryData *AggHashEntry;
+
+typedef struct AggHashEntryData
+{
+    TupleHashEntryData shared;  /* common header for hash table entries */
+    /* per-aggregate transition status array */
+    AggStatePerGroupData pergroup[FLEXIBLE_ARRAY_MEMBER];
+}   AggHashEntryData;
 
 static float8 *
 check_float8_array(ArrayType *transarray, const char *caller, int n);
@@ -53,28 +80,27 @@ Datum vfloat8pl(PG_FUNCTION_ARGS)
 	float8		arg1;
 	float8		arg2;
 	int			i;
-	char		**entries;
+	AggStatePerGroup *entries;
 	vtype		*batch;
-	Datum *transVal;
-	int32 groupOffset = PG_GETARG_INT32(1);
+	int32 groupno = PG_GETARG_INT32(1);
 
-	if (groupOffset < 0)
+	if (groupno < 0)
 		elog(ERROR, "Not implemented");
 
-	entries = (char **)PG_GETARG_POINTER(0);
+	//entries = (char **)PG_GETARG_POINTER(0);
+	entries = (AggStatePerGroup *)PG_GETARG_POINTER(0);
 	batch = (vtype *) PG_GETARG_POINTER(2);
 	for (i = 0; i < BATCHSIZE; i++)
 	{
 		if (batch->skipref[i])
 			continue;
 		
-		transVal = (Datum *)(entries[i] + groupOffset);	
-		arg1 = DatumGetFloat8(*transVal);
+		arg1 = DatumGetFloat8(entries[i][groupno].transValue);
 		arg2 = DatumGetFloat8(batch->values[i]);
 		result = arg1 + arg2;
 
 		CHECKFLOATVAL(result, isinf(arg1) || isinf(arg2), true);
-		*transVal = Float8GetDatum(result);
+		entries[i][groupno].transValue = Float8GetDatum(result);
 	}
 
 	PG_RETURN_INT64(0);
@@ -91,24 +117,25 @@ vfloat8_accum(PG_FUNCTION_ARGS)
 				sumX,
 				sumX2;
 
-	Datum		*transDatum;
+	AggStatePerGroup *entries;
 	int			i;
-	char		**entries;
 	vtype		*batch;
-	int32		groupOffset = PG_GETARG_INT32(1);
+	int32		groupno = PG_GETARG_INT32(1);
 
-	if (groupOffset < 0)
+	if (groupno < 0)
 		elog(ERROR, "Not implemented");
 
-	entries = (char **)PG_GETARG_POINTER(0);
+	entries = (AggStatePerGroup *)PG_GETARG_POINTER(0);
 	batch = (vtype *) PG_GETARG_POINTER(2);
 
 	for (i = 0; i < BATCHSIZE; i++)
 	{
 		if (batch->skipref[i])
 			continue;
-		transDatum = (Datum *)(entries[i] + groupOffset);
-		transarray = DatumGetArrayTypeP(*transDatum);
+		
+		transarray = DatumGetArrayTypeP(entries[i][groupno].transValue);
+		//transDatum = (Datum *)(entries[i] + groupOffset);
+		//transarray = DatumGetArrayTypeP(*transDatum);
 		transvalues = check_float8_array(transarray, "float8_accum", 3);
 		N = transvalues[0];
 		sumX = transvalues[1];
@@ -151,6 +178,67 @@ vfloat8_accum(PG_FUNCTION_ARGS)
 	PG_RETURN_ARRAYTYPE_P(0);
 }
 
+/*
+ * float8_combine
+ *
+ * An aggregate combine function used to combine two 3 fields
+ * aggregate transition data into a single transition data.
+ * This function is used only in two stage aggregation and
+ * shouldn't be called outside aggregate context.
+ */
+Datum
+vfloat8_combine(PG_FUNCTION_ARGS)
+{
+	AggStatePerGroup *entries;
+	int			i;
+	vtype		*batch;
+	int32		groupno = PG_GETARG_INT32(1);
+	ArrayType  *transarray1;
+	ArrayType  *transarray2;
+	float8	   *transvalues1;
+	float8	   *transvalues2;
+	float8		N,
+				sumX,
+				sumX2;
+
+	if (groupno < 0)
+		elog(ERROR, "Not implemented");
+	if (!AggCheckCallContext(fcinfo, NULL))
+		elog(ERROR, "aggregate function called in non-aggregate context");
+
+	entries = (AggStatePerGroup *)PG_GETARG_POINTER(0);
+	batch = (vtype *) PG_GETARG_POINTER(2);
+
+	for (i = 0; i < BATCHSIZE; i++)
+	{
+		if (batch->skipref[i])
+			continue;
+
+		transarray1 = DatumGetArrayTypeP(entries[i][groupno].transValue);
+		transarray2 = DatumGetArrayTypeP(batch->values[i]);
+
+		transvalues1 = check_float8_array(transarray1, "float8_combine", 3);
+		N = transvalues1[0];
+		sumX = transvalues1[1];
+		sumX2 = transvalues1[2];
+
+		transvalues2 = check_float8_array(transarray2, "float8_combine", 3);
+
+		N += transvalues2[0];
+		sumX += transvalues2[1];
+		CHECKFLOATVAL(sumX, isinf(transvalues1[1]) || isinf(transvalues2[1]),
+				true);
+		sumX2 += transvalues2[2];
+		CHECKFLOATVAL(sumX2, isinf(transvalues1[2]) || isinf(transvalues2[2]),
+				true);
+
+		transvalues1[0] = N;
+		transvalues1[1] = sumX;
+		transvalues1[2] = sumX2;
+	}
+
+	PG_RETURN_ARRAYTYPE_P(0);
+}
 
 Datum
 vfloat8_avg(PG_FUNCTION_ARGS)
