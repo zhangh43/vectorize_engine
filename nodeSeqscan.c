@@ -51,7 +51,7 @@ static void InitAOCSScanOpaque(SeqScanState *scanState, Relation currentRelation
 #include "vectorTupleSlot.h"
 #include "utils.h"
 #include "vtype/vtype.h"
-
+#include "cdbaocsam.h"
 
 /* CustomScanMethods */
 static Node *CreateVectorScanState(CustomScan *custom_plan);
@@ -301,8 +301,7 @@ VSeqNext(VectorScanState *vss)
 	}
 	else if (node->ss_currentScanDesc_aocs)
 	{
-		elog(ERROR, "vectorize aocs not supported");
-		aocs_getnext(node->ss_currentScanDesc_aocs, direction, slot);
+		vaocs_getnext(node->ss_currentScanDesc_aocs, direction, slot);
 	}
 	else
 	{

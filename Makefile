@@ -7,7 +7,7 @@ PGFILEDESC = "vectorize engine for PostgreSQL"
 
 REGRESS = vectorize_engine
 
-OBJS += vectorEngine.o nodeSeqscan.o execHHashagg.o nodeAgg.o nodeUnbatch.o execScan.o plan.o utils.o execTuples.o execQual.o vectorTupleSlot.o
+OBJS += vectorEngine.o nodeSeqscan.o execHHashagg.o nodeAgg.o nodeUnbatch.o execScan.o plan.o utils.o execTuples.o execQual.o vectorTupleSlot.o aocsam.o
 OBJS += vtype/vtype.o vtype/vtimestamp.o vtype/vint.o vtype/vfloat.o vtype/vpseudotypes.o vtype/vvarchar.o vtype/vdate.o
 
 # print vectorize info when compile

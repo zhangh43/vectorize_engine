@@ -2188,6 +2188,7 @@ VExecAgg(VectorAggState *vas)
 				result = agg_retrieve_hash_table(vas);
 				break;
 			default:
+				elog(ERROR,"non hash agg not supported yet");
 				result = agg_retrieve_direct(vas);
 				break;
 		}
