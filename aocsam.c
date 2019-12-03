@@ -684,6 +684,7 @@ ReadNext:
 			column->dim = minimalBatchSize;
 		}
 		vslot->dim = minimalBatchSize;
+		memset(vslot->skip, true, sizeof(bool) * BATCHSIZE);
 		memset(vslot->skip, false, sizeof(bool) * minimalBatchSize);
 
 		/* Read from cur_seg */
