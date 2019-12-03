@@ -1,3 +1,11 @@
+/*-------------------------------------------------------------------------
+ *
+ * plan.c
+ *
+ * Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ *
+ *-------------------------------------------------------------------------
+ */
 #include "postgres.h"
 #include "access/htup.h"
 #include "catalog/pg_collation.h"

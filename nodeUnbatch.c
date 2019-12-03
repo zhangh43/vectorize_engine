@@ -1,11 +1,8 @@
 /*-------------------------------------------------------------------------
  *
  * unbatch.c
- *	  TODO file description
  *
- *
- * Copyright (c) 2019-Present Pivotal Software, Inc.
- *
+ * Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */

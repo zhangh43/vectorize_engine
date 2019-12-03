@@ -1,3 +1,11 @@
+/*-------------------------------------------------------------------------
+ *
+ * utils.c
+ *
+ * Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ *
+ *-------------------------------------------------------------------------
+ */
 #include "postgres.h"
 
 #include "catalog/namespace.h"
