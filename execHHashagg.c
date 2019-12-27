@@ -433,6 +433,7 @@ setGroupAggs(HashAggTable *hashtable, HashAggEntry *entry, int i)
 		hashtable->groupaggs->tuple[i] = (MemTuple)entry->tuple_and_aggs;
 		hashtable->groupaggs->aggs[i] = (AggStatePerGroup)
 			((char *)entry->tuple_and_aggs + MAXALIGN(tup_len));
+		hashtable->groupaggs->skip[i] = false;
 	}
 }
 
@@ -977,6 +978,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 		Datum *batchvalue = (Datum *)palloc(sizeof(Datum) * outerslot->tts_tupleDescriptor->natts);
 		for(col = 0; col < outerslot->tts_tupleDescriptor->natts; col++)
 			batchvalue[col] = outerslot->PRIVATE_tts_values[col];
+		memset(hashtable->groupaggs->skip, true, sizeof(bool) * BATCHSIZE);
 		for (i = 0; i < BATCHSIZE; i++)
 		{
 			if (vslot->skip[i])
@@ -1043,7 +1045,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 		if (DO_AGGSPLIT_COMBINE(aggstate->aggsplit))
 			vcombine_aggregates(aggstate, hashtable->groupaggs->aggs);
 		else
-			vadvance_aggregates(aggstate, hashtable->groupaggs->aggs);
+			vadvance_aggregates(aggstate, hashtable->groupaggs);
 
 		hashtable->num_tuples++;
 

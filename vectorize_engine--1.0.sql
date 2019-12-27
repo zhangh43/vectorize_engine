@@ -1022,6 +1022,12 @@ create AGGREGATE count(vany) (
     sfunc = vint8inc_any, 
     stype = int8);
 
+
+CREATE FUNCTION vint8inc_int4(int8, vint4) returns int8 as '$libdir/vectorize_engine' language c immutable;
+create AGGREGATE count(vint4) ( 
+    sfunc = vint8inc_int4, 
+    stype = int8);
+
 CREATE FUNCTION vint4_sum(int8, vint4) returns int8 as '$libdir/vectorize_engine' language c immutable;
 CREATE AGGREGATE sum(vint4) ( 
     sfunc = vint4_sum,

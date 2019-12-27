@@ -4,8 +4,20 @@
 #include "nodes/execnodes.h"
 
 PG_FUNCTION_INFO_V1(vint8inc_any);
+PG_FUNCTION_INFO_V1(vint8inc_int4);
 PG_FUNCTION_INFO_V1(vint4_sum);
 PG_FUNCTION_INFO_V1(vint8inc);
+
+/*
+ * A higher level structure to earily reference grouping keys and their
+ * aggregate values.
+ */
+typedef struct GroupKeysAndAggs
+{
+    struct MemTupleData *tuple[BATCHSIZE]; /* tuple that contains grouping keys */
+    AggStatePerGroup aggs[BATCHSIZE]; /* the location for the first aggregate values. */
+    bool            skip[BATCHSIZE];
+} GroupKeysAndAggs;
 
 typedef struct AggStatePerGroupData
 {
@@ -33,12 +45,12 @@ typedef struct AggHashEntryData
 }   AggHashEntryData;
 
 
-Datum vint8inc_any(PG_FUNCTION_ARGS)
+Datum vint8inc_int4(PG_FUNCTION_ARGS)
 {
 	int64		result;
 	int64		arg;
 	int			i;
-	AggStatePerGroup *entries;	
+	GroupKeysAndAggs *entries;	
 	vtype		*batch;
 	
 	int32 groupno = PG_GETARG_INT32(1);
@@ -67,15 +79,14 @@ Datum vint8inc_any(PG_FUNCTION_ARGS)
 		PG_RETURN_INT64(result);
 	}
 
-	entries = (AggStatePerGroup *)PG_GETARG_POINTER(0);
-	batch = (vtype *) PG_GETARG_POINTER(2);
+	entries = (GroupKeysAndAggs *)PG_GETARG_POINTER(0);
 
 	for (i = 0; i < BATCHSIZE; i++)
 	{
-		if (batch->skipref[i])
+		if (entries->skip[i])
 			continue;
 
-		arg = DatumGetInt64(entries[i][groupno].transValue);
+		arg = DatumGetInt64(entries->aggs[i][groupno].transValue);
 		result = arg + 1;
 		/* Overflow check */
 		if (result < 0 && arg > 0)
@@ -83,7 +94,62 @@ Datum vint8inc_any(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 					 errmsg("bigint out of range")));
 
-		entries[i][groupno].transValue = Int64GetDatum(result);
+		entries->aggs[i][groupno].transValue = Int64GetDatum(result);
+	}
+
+	PG_RETURN_INT64(0);
+}
+
+Datum vint8inc_any(PG_FUNCTION_ARGS)
+{
+	int64		result;
+	int64		arg;
+	int			i;
+	GroupKeysAndAggs *entries;	
+	vtype		*batch;
+	
+	int32 groupno = PG_GETARG_INT32(1);
+
+	if (groupno < 0)
+	{
+		/* Not called as an aggregate, so just do it the dumb way */
+		arg = PG_GETARG_INT64(0);
+		batch = (vtype *) PG_GETARG_POINTER(2);
+		
+		result = arg;
+
+		for (i = 0; i < BATCHSIZE; i++)
+		{
+			if (batch->skipref[i])
+				continue;
+			result++;
+		}
+
+		/* Overflow check */
+		if (result < 0 && arg > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+					 errmsg("bigint out of range")));
+
+		PG_RETURN_INT64(result);
+	}
+
+	entries = (GroupKeysAndAggs *)PG_GETARG_POINTER(0);
+
+	for (i = 0; i < BATCHSIZE; i++)
+	{
+		if (entries->skip[i])
+			continue;
+
+		arg = DatumGetInt64(entries->aggs[i][groupno].transValue);
+		result = arg + 1;
+		/* Overflow check */
+		if (result < 0 && arg > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+					 errmsg("bigint out of range")));
+
+		entries->aggs[i][groupno].transValue = Int64GetDatum(result);
 	}
 
 	PG_RETURN_INT64(0);

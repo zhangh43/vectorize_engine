@@ -105,6 +105,7 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				List	*funcname = NULL;
 				int		i;
 				Oid		*argtypes;
+				int		nargs;
 				char	*proname;
 				bool		retset;
 				int			nvargs;
@@ -125,9 +126,19 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				argtypes = palloc(sizeof(Oid) * procform->pronargs);
 				for (i = 0; i < procform->pronargs; i++)
 					argtypes[i] = GetVtype(procform->proargtypes.values[i]);
-				
+				nargs = procform->pronargs;
+				/*
+				 * workaround for count(*) 
+				 * count(*) has no pronargs, thus cannot find the vectorized aggfnoid. 
+				 * we use count(vint4) to replace count(*)
+				 */
+				if (procform->pronargs == 0)
+				{
+					nargs = 1;
+					argtypes[i] = GetVtype(INT4OID);
+				}
 				fdresult = func_get_detail(funcname, NIL, NIL,
-						procform->pronargs, argtypes, false, false,
+						nargs, argtypes, false, false,
 						&newnode->aggfnoid, &retype, &retset,
 						&nvargs, &vatype,
 						&true_oid_array, NULL);
@@ -279,8 +290,8 @@ plan_tree_mutator(Node *node,
 			{
 				CustomScan	*cscan;
 				Agg			*vagg;
-				if (((Agg *)node)->aggstrategy != AGG_PLAIN && ((Agg *)node)->aggstrategy != AGG_HASHED)
-					elog(ERROR, "Non plain agg is not supported");
+				if (((Agg *)node)->aggstrategy != AGG_HASHED)
+					elog(ERROR, "Non hash agg is not supported yet");
 				if (has_motion_child((Plan *)node))
 				{
 					FLATCOPY(vagg, node, Agg);

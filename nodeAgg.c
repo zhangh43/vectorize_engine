@@ -299,7 +299,7 @@ static void VExecEndAgg(VectorAggState *node);
 static void InitAggResultSlot(VectorAggState *vas, EState *estate);
 static void vadvance_transition_function(AggState *aggstate,
 							AggStatePerTrans pertrans,
-							AggStatePerGroup *entries);
+							GroupKeysAndAggs *entries);
 
 static TupleTableSlot *agg_retrieve_hash_table(VectorAggState *aggstate);
 static TupleTableSlot *agg_retrieve_hash_table_internal(VectorAggState *aggstate);
@@ -535,7 +535,7 @@ vadvance_combine_function(AggState *aggstate,
  * When called, CurrentMemoryContext should be the per-query context.
  */
 void
-vadvance_aggregates(AggState *aggstate, AggStatePerGroup *entries)
+vadvance_aggregates(AggState *aggstate, GroupKeysAndAggs *entries)
 {
 	int			transno;
 	int			setno = 0;
@@ -639,7 +639,7 @@ vadvance_aggregates(AggState *aggstate, AggStatePerGroup *entries)
 static void
 vadvance_transition_function(AggState *aggstate,
 							AggStatePerTrans pertrans,
-							AggStatePerGroup *entries)
+							GroupKeysAndAggs *entries)
 {
 	FunctionCallInfo fcinfo = &pertrans->transfn_fcinfo;
 	MemoryContext oldContext;

@@ -23,6 +23,7 @@
 #include "utils/workfile_mgr.h"
 
 #include "vtype/vtype.h"
+#include "nodeAgg.h" /* Must see AggStatePerGroupData. */
 
 typedef uint32 HashKey;
 typedef struct BatchFileInfo BatchFileInfo;
@@ -130,15 +131,6 @@ typedef struct HashAggTableSizes
 	bool      spill;      /* Do we expect to spill ? */
 } HashAggTableSizes;
 
-/*
- * A higher level structure to earily reference grouping keys and their
- * aggregate values.
- */
-typedef struct GroupKeysAndAggs
-{
-	struct MemTupleData *tuple[BATCHSIZE]; /* tuple that contains grouping keys */
-	AggStatePerGroup aggs[BATCHSIZE]; /* the location for the first aggregate values. */
-} GroupKeysAndAggs;
 
 /* An Agg hash table with associated overflow batches and processing
  * state.  
