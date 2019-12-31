@@ -286,6 +286,31 @@ plan_tree_mutator(Node *node,
 					newmotion->plan.lefttree = AddUnbatchNodeAtTop(newmotion->plan.lefttree);
 				return (Node *)newmotion;
 			}
+		case T_Sort:
+			{
+				CustomScan	*cscan = NULL;
+				Sort		*vsort;
+				if (has_motion_child((Plan *)node))
+				{
+					FLATCOPY(vsort, node, Sort);
+					MUTATE(((Plan *)vsort)->lefttree, ((Plan *)node)->lefttree, Plan *);
+					MUTATE(((Plan *)vsort)->righttree, ((Plan *)node)->righttree, Plan *);
+					MUTATE(((Plan *)vsort)->initPlan, ((Plan *)node)->initPlan, List *);
+					return (Node *)vsort;
+				}
+				elog(ERROR, "Vectorized sort is not supported yet.");
+				/*
+				cscan = MakeCustomScanForSort();
+				FLATCOPY(vsort, node, Sort);
+				cscan->custom_plans = lappend(cscan->custom_plans, vsort);
+				cscan->scan.plan.flow = vsort->plan.flow;
+				cscan->scan.plan.lefttree = vsort->plan.lefttree;
+				cscan->scan.plan.righttree = vsort->plan.righttree;
+
+				SCANMUTATE(vsort, node);
+				*/
+				return (Node *)cscan;
+			}
 		case T_Agg:
 			{
 				CustomScan	*cscan;
