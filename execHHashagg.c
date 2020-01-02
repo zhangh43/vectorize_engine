@@ -130,11 +130,11 @@ static void *readHashEntry(AggState *aggstate,
 						   int32 *p_input_size);
 
 /* Methods for hash table */
-static uint32 calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot);
+static uint32 calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot, int row);
 static void spill_hash_table(AggState *aggstate);
 static void expand_hash_table(AggState *aggstate);
 static void init_agg_hash_iter(HashAggTable* ht);
-static HashAggEntry *lookup_agg_hash_entry(AggState *aggstate, void *input_record,
+static HashAggEntry *lookup_agg_hash_entry(AggState *aggstate, void *input_record, int row,
 										   InputRecordType input_type, int32 input_size,
 										   uint32 hashkey, bool *p_isnew);
 static void agg_hash_table_stat_upd(HashAggTable *ht);
@@ -156,7 +156,7 @@ static inline void *mpool_cxt_alloc(void *manager, Size len)
  * API.  Use a different name to underline that we don't use dynahash.
  */
 uint32
-calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot)
+calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot, int row)
 {
 	Agg *agg;
 	ExprContext *econtext;
@@ -174,11 +174,11 @@ calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot)
 	{
 		AttrNumber	att = agg->grpColIdx[i];
 		bool isnull = false;
-		Datum value = slot_getattr(inputslot, att, &isnull);
+		vtype *batch = (vtype *)DatumGetPointer(inputslot->PRIVATE_tts_values[att - 1]);
 
-		if (!isnull)			/* treat nulls as having hash key 0 */
+		if (!batch->isnull[row])			/* treat nulls as having hash key 0 */
 		{
-			hashtable->hashkey_buf[i] = DatumGetUInt32(FunctionCall1(info, value));
+			hashtable->hashkey_buf[i] = DatumGetUInt32(FunctionCall1(info, batch->values[row]));
 		}
 		
 		else
@@ -292,7 +292,7 @@ getEmptyHashAggEntry(AggState *aggstate)
  * If no enough memory is available, this function returns NULL.
  */
 static HashAggEntry *
-makeHashAggEntryForInput(AggState *aggstate, TupleTableSlot *inputslot, uint32 hashvalue)
+makeHashAggEntryForInput(AggState *aggstate, Datum *batches, uint32 hashvalue, int row)
 {
 	HashAggEntry *entry;
 	MemoryContext oldcxt;
@@ -313,7 +313,9 @@ makeHashAggEntryForInput(AggState *aggstate, TupleTableSlot *inputslot, uint32 h
 	foreach (lc, aggstate->hash_needed)
 	{
 		const int n = lfirst_int(lc);
-		values[n-1] = slot_getattr(inputslot, n, &(isnull[n-1])); 
+		vtype *batch = (vtype *)DatumGetPointer(batches[n-1]);
+		values[n-1] = batch->values[row];
+		isnull[n-1] = batch->isnull[row];
 	}
 
 	tup_len = 0;
@@ -457,6 +459,7 @@ setGroupAggs(HashAggTable *hashtable, HashAggEntry *entry, int i)
 static HashAggEntry *
 lookup_agg_hash_entry(AggState *aggstate,
 					  void *input_record,
+					  int row,
 					  InputRecordType input_type, int32 input_size,
 					  uint32 hashkey, bool *p_isnew)
 {
@@ -504,6 +507,7 @@ lookup_agg_hash_entry(AggState *aggstate,
 			AttrNumber	att = agg->grpColIdx[i];
 			Datum input_datum = 0;
 			Datum entry_datum = 0;
+			vtype *batch;
 			bool input_isNull = false;
 			bool entry_isNull = false;
 				
@@ -511,6 +515,8 @@ lookup_agg_hash_entry(AggState *aggstate,
 			{
 				case INPUT_RECORD_TUPLE:
 					input_datum = slot_getattr((TupleTableSlot *)input_record, att, &input_isNull);
+					batch = (vtype *)DatumGetPointer(input_datum);
+					input_isNull = false;
 					break;
 				case INPUT_RECORD_GROUP_AND_AGGS:
 					input_datum = memtuple_getattr((MemTuple)input_record, mt_bind, att, &input_isNull);
@@ -523,7 +529,7 @@ lookup_agg_hash_entry(AggState *aggstate,
 
 			if ( !input_isNull && !entry_isNull &&
 				 (DatumGetBool(FunctionCall2(&aggstate->phase->eqfunctions[i],
-											 input_datum,
+											 batch->values[row],
 											 entry_datum)) ) )
 				continue; /* Both non-NULL and equal. */
 			match = (input_isNull && entry_isNull);/* NULLs match in group keys. */
@@ -538,11 +544,12 @@ lookup_agg_hash_entry(AggState *aggstate,
 
 	if (entry == NULL)
 	{
+		Datum *batches = ((TupleTableSlot *)input_record)->PRIVATE_tts_values;
 		/* Entry not found! Create a new matching entry. */
 		switch(input_type)
 		{
 			case INPUT_RECORD_TUPLE:
-				entry = makeHashAggEntryForInput(aggstate, (TupleTableSlot *)input_record, hashkey);
+				entry = makeHashAggEntryForInput(aggstate, batches, hashkey, row);
 				break;
 			case INPUT_RECORD_GROUP_AND_AGGS:
 				entry = makeHashAggEntryForGroup(aggstate, input_record, input_size, hashkey);
@@ -972,25 +979,19 @@ vagg_hash_initial_pass(AggState *aggstate)
 		/* set up for advance_aggregates call */
 		tmpcontext->ecxt_outertuple = outerslot;
 
+
 		/* Find or (if there's room) build a hash table entry for the
 		 * input tuple's group. */
 		VectorTupleSlot *vslot = (VectorTupleSlot *)outerslot;
-		Datum *batchvalue = (Datum *)palloc(sizeof(Datum) * outerslot->tts_tupleDescriptor->natts);
-		for(col = 0; col < outerslot->tts_tupleDescriptor->natts; col++)
-			batchvalue[col] = outerslot->PRIVATE_tts_values[col];
+
 		memset(hashtable->groupaggs->skip, true, sizeof(bool) * BATCHSIZE);
 		for (i = 0; i < BATCHSIZE; i++)
 		{
 			if (vslot->skip[i])
 				continue;
-			for(col = 0; col < outerslot->tts_tupleDescriptor->natts; col++)
-			{
-				vtype *batch = (vtype *)DatumGetPointer(batchvalue[col]);
-				outerslot->PRIVATE_tts_values[col] = batch->values[i];
-				outerslot->PRIVATE_tts_isnull[col] = batch->isnull[i];
-			}
-			hashkey = calc_hash_value(aggstate, outerslot);
-			entry = lookup_agg_hash_entry(aggstate, (void *)outerslot,
+
+			hashkey = calc_hash_value(aggstate, outerslot, i);
+			entry = lookup_agg_hash_entry(aggstate, (void *)outerslot, i,
 					INPUT_RECORD_TUPLE, 0, hashkey, &isNew);
 
 			if (entry == NULL)
@@ -1023,7 +1024,7 @@ vagg_hash_initial_pass(AggState *aggstate)
 
 				spill_hash_table(aggstate);
 
-				entry = lookup_agg_hash_entry(aggstate, (void *)outerslot,
+				entry = lookup_agg_hash_entry(aggstate, (void *)outerslot, i,
 						INPUT_RECORD_TUPLE, 0, hashkey, &isNew);
 			}
 
@@ -1037,9 +1038,6 @@ vagg_hash_initial_pass(AggState *aggstate)
 				initialize_aggregates(aggstate, hashtable->groupaggs->aggs[i], 0);
 			}
 		}
-		for(col = 0; col < outerslot->tts_tupleDescriptor->natts; col++)
-			outerslot->PRIVATE_tts_values[col] = batchvalue[col];
-		pfree(batchvalue);
 			
 		/* Advance the aggregates */
 		if (DO_AGGSPLIT_COMBINE(aggstate->aggsplit))
