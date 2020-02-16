@@ -173,7 +173,6 @@ calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot, int row)
 	for (i = 0; i < agg->numCols; i++, info++)
 	{
 		AttrNumber	att = agg->grpColIdx[i];
-		bool isnull = false;
 		vtype *batch = (vtype *)DatumGetPointer(inputslot->PRIVATE_tts_values[att - 1]);
 
 		if (!batch->isnull[row])			/* treat nulls as having hash key 0 */
@@ -923,7 +922,6 @@ vagg_hash_initial_pass(AggState *aggstate)
 	bool streaming = ((Agg *) aggstate->ss.ps.plan)->streaming;
 	bool tuple_remaining = true;
 	int i;
-	int col;
 
 	Assert(hashtable);
 	AssertImply(!streaming, aggstate->hashaggstatus == HASHAGG_BEFORE_FIRST_PASS);

@@ -43,6 +43,8 @@ vector_post_planner(Query	*parse,
 	Plan		*savedPlanTree;
 	List		*savedSubplan;
 
+	MemoryContext oldcontext = CurrentMemoryContext;
+	
 	if (planner_hook_next)
 		stmt = planner_hook_next(parse, cursorOptions, boundParams);
 	else
@@ -78,6 +80,7 @@ vector_post_planner(Query	*parse,
 	PG_CATCH();
 	{
 		ErrorData  *edata;
+		MemoryContextSwitchTo(oldcontext);
 		edata = CopyErrorData();
 		FlushErrorState();
 		if (enable_vectorize_notice)

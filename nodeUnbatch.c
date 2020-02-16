@@ -202,7 +202,6 @@ AddUnbatchNodeAtTop(Plan *node)
 {
     CustomScan *convert = makeNode(CustomScan);
     convert->methods = &unbatch_methods;
-	convert->scan.plan.dispatch = node->dispatch;
 	convert->scan.plan.flow = node->flow;
 	convert->scan.plan.lefttree = node;
     convert->scan.plan.righttree = NULL;

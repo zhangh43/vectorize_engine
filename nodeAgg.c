@@ -568,7 +568,7 @@ vadvance_aggregates(AggState *aggstate, GroupKeysAndAggs *entries)
 		if (pertrans->numSortCols > 0)
 		{
 			/* DISTINCT and/or ORDER BY case */
-			Assert(slot->tts_nvalid == pertrans->numInputs);
+			Assert(slot->PRIVATE_tts_nvalid == pertrans->numInputs);
 
 			/*
 			 * If the transfn is strict, we want to check for nullity before
@@ -606,7 +606,7 @@ vadvance_aggregates(AggState *aggstate, GroupKeysAndAggs *entries)
 
 			/* Load values into fcinfo */
 			/* Start from 1, since the 0th arg will be the transition value */
-			Assert(slot->tts_nvalid >= numTransInputs);
+			Assert(slot->PRIVATE_tts_nvalid >= numTransInputs);
 			for (i = 0; i < numTransInputs; i++)
 			{
 				fcinfo->arg[i + 2] = slot->PRIVATE_tts_values[i];
