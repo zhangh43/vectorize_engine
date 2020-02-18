@@ -7,6 +7,9 @@
 PG_FUNCTION_INFO_V1(vdate_le_timestamp);
 PG_FUNCTION_INFO_V1(vdate_mi_interval);
 PG_FUNCTION_INFO_V1(vdate_le);
+PG_FUNCTION_INFO_V1(vdate_lt);
+PG_FUNCTION_INFO_V1(vdate_ge);
+PG_FUNCTION_INFO_V1(vdate_gt);
 PG_FUNCTION_INFO_V1(vdate_in);
 PG_FUNCTION_INFO_V1(vdate_out);
 
@@ -110,6 +113,60 @@ vdate_le(PG_FUNCTION_ARGS)
 		if (vdt1->skipref[i])
 			continue;
 		result->values[i] = BoolGetDatum(DatumGetDateADT(vdt1->values[i]) <= dateVal2);
+	}
+	PG_RETURN_POINTER(result);
+}
+
+Datum
+vdate_lt(PG_FUNCTION_ARGS)
+{
+	vdate		*vdt1 = (vdate *)PG_GETARG_POINTER(0);
+	DateADT		dateVal2 = PG_GETARG_DATEADT(1);
+	vbool		*result;
+	int			i;
+	
+	result = buildvbool(vdt1->dim, vdt1->skipref);
+	for (i = 0; i < BATCHSIZE; i++ )
+	{
+		if (vdt1->skipref[i])
+			continue;
+		result->values[i] = BoolGetDatum(DatumGetDateADT(vdt1->values[i]) < dateVal2);
+	}
+	PG_RETURN_POINTER(result);
+}
+
+Datum
+vdate_ge(PG_FUNCTION_ARGS)
+{
+	vdate		*vdt1 = (vdate *)PG_GETARG_POINTER(0);
+	DateADT		dateVal2 = PG_GETARG_DATEADT(1);
+	vbool		*result;
+	int			i;
+	
+	result = buildvbool(vdt1->dim, vdt1->skipref);
+	for (i = 0; i < BATCHSIZE; i++ )
+	{
+		if (vdt1->skipref[i])
+			continue;
+		result->values[i] = BoolGetDatum(DatumGetDateADT(vdt1->values[i]) >= dateVal2);
+	}
+	PG_RETURN_POINTER(result);
+}
+
+Datum
+vdate_gt(PG_FUNCTION_ARGS)
+{
+	vdate		*vdt1 = (vdate *)PG_GETARG_POINTER(0);
+	DateADT		dateVal2 = PG_GETARG_DATEADT(1);
+	vbool		*result;
+	int			i;
+	
+	result = buildvbool(vdt1->dim, vdt1->skipref);
+	for (i = 0; i < BATCHSIZE; i++ )
+	{
+		if (vdt1->skipref[i])
+			continue;
+		result->values[i] = BoolGetDatum(DatumGetDateADT(vdt1->values[i]) > dateVal2);
 	}
 	PG_RETURN_POINTER(result);
 }

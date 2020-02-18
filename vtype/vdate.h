@@ -11,6 +11,9 @@ extern Datum vdate_mi_interval(PG_FUNCTION_ARGS);
 /* vdate oper cmp const */
 extern Datum vdate_le_timestamp(PG_FUNCTION_ARGS);
 extern Datum vdate_le(PG_FUNCTION_ARGS);
+extern Datum vdate_lt(PG_FUNCTION_ARGS);
+extern Datum vdate_ge(PG_FUNCTION_ARGS);
+extern Datum vdate_gt(PG_FUNCTION_ARGS);
 
 extern Datum vdate_in(PG_FUNCTION_ARGS);
 extern Datum vdate_out(PG_FUNCTION_ARGS);

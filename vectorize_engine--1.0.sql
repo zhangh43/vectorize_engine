@@ -1011,8 +1011,14 @@ CREATE FUNCTION vdate_le_timestamp(vdate, timestamp) RETURNS vbool AS '$libdir/v
 CREATE OPERATOR <= ( leftarg = vdate, rightarg = timestamp, procedure = vdate_le_timestamp, commutator = <= );
 CREATE FUNCTION vdate_mi_interval(vdate, interval) RETURNS vtimestamp AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
 CREATE OPERATOR - ( leftarg = vdate, rightarg = interval, procedure = vdate_mi_interval, commutator = - );
-CREATE FUNCTION vdate_le(vdate, date) RETURNS vdate AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION vdate_le(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
 CREATE OPERATOR <= ( leftarg = vdate, rightarg = date, procedure = vdate_le, commutator = <= );
+CREATE FUNCTION vdate_lt(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR < ( leftarg = vdate, rightarg = date, procedure = vdate_lt, commutator = < );
+CREATE FUNCTION vdate_ge(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR >= ( leftarg = vdate, rightarg = date, procedure = vdate_ge, commutator = >= );
+CREATE FUNCTION vdate_gt(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR > ( leftarg = vdate, rightarg = date, procedure = vdate_gt, commutator = > );
 
 
 --create count aggregate functions
