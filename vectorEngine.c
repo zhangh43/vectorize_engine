@@ -11,9 +11,10 @@
 
 #include "postgres.h"
 
+#include "cdb/cdbvars.h"
+#include "executor/nodeCustom.h"
 #include "fmgr.h"
 #include "optimizer/planner.h"
-#include "executor/nodeCustom.h"
 #include "utils/guc.h"
 
 #include "nodeUnbatch.h"
@@ -50,7 +51,7 @@ vector_post_planner(Query	*parse,
 	else
 		stmt = standard_planner(parse, cursorOptions, boundParams);
 
-	if (!enable_vectorize_engine)
+	if (!enable_vectorize_engine || Gp_role != GP_ROLE_DISPATCH)
 		return stmt;
 
 	/* modify plan by using vectorized nodes */
@@ -106,9 +107,9 @@ _PG_init(void)
 	InitVectorAgg();
 	InitUnbatch();
 
-    /* planner hook registration */
-    planner_hook_next = planner_hook;
-    planner_hook = vector_post_planner;
+	/* planner hook registration */
+	planner_hook_next = planner_hook;
+	planner_hook = vector_post_planner;
 
 	DefineCustomBoolVariable("enable_vectorize_engine",
 							 "Enables vectorize engine.",

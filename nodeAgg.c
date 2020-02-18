@@ -3918,8 +3918,6 @@ VExecEndAgg(VectorAggState *vas)
 
 	outerPlan = outerPlanState(node);
 	ExecEndNode(outerPlan);
-
-	EndPlanStateGpmonPkt(&node->ss.ps);
 }
 
 /*

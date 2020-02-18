@@ -15,12 +15,14 @@ VACUUM ANALYZE t1;
 
 create extension vectorize_engine;
 SET enable_vectorize_engine TO on;
+
+-- add order by to make test stable when we support sort
 SELECT * FROM t1;
 SELECT b FROM t1;
 SELECT b+1 FROM t1;
-SELECT count(b) FROM t1;
 SELECT a, sum(b), avg(b)  FROM t1 group by a;
 SELECT a, sum(b), avg(b)  FROM t1 where a < 3 group by a;
 
-
+-- plain agg not supported yet
+SELECT count(b) FROM t1;
 drop extension vectorize_engine;
