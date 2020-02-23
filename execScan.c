@@ -43,8 +43,9 @@ ExecScanFetch(VectorScanState *vss,
 	
 	estate = node->ss.ps.state;
 
-	if (estate->es_epqTuple != NULL)
+	if (estate->es_epq_active != NULL)
 	{
+		EPQState   *epqstate = estate->es_epq_active;
 		/*
 		 * We are inside an EvalPlanQual recheck.  Return the test tuple if
 		 * one is available, after rechecking any access-method-specific
@@ -66,29 +67,12 @@ ExecScanFetch(VectorScanState *vss,
 				ExecClearTuple(slot);	/* would not be returned by scan */
 			return slot;
 		}
-		else if (estate->es_epqTupleSet[scanrelid - 1])
+		else if (epqstate->relsubs_done[scanrelid - 1])
 		{
 			TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 
-			/* Return empty slot if we already returned a tuple */
-			if (estate->es_epqScanDone[scanrelid - 1])
-				return ExecClearTuple(slot);
-			/* Else mark to remember that we shouldn't return more */
-			estate->es_epqScanDone[scanrelid - 1] = true;
-
-			/* Return empty slot if we haven't got a test tuple */
-			if (estate->es_epqTuple[scanrelid - 1] == NULL)
-				return ExecClearTuple(slot);
-
-			/* Store test tuple in the plan node's scan slot */
-			ExecStoreTuple(estate->es_epqTuple[scanrelid - 1],
-						   slot, InvalidBuffer, false);
-
-			/* Check if it meets the access-method conditions */
-			if (!(*recheckMtd) (vss, slot))
-				ExecClearTuple(slot);	/* would not be returned by scan */
-
-			return slot;
+			/* Return empty slot, as we already returned a tuple */
+			return ExecClearTuple(slot);
 		}
 	}
 
@@ -126,12 +110,11 @@ VExecScan(VectorScanState *vss,
 		 VExecScanRecheckMtd recheckMtd)
 {
 	ExprContext		*econtext;
-	List			*qual;
+	ExprState  		*qual;
 	ProjectionInfo	*projInfo;
-	ExprDoneCond	isDone;
 	TupleTableSlot	*resultSlot;
 	ScanState 		*node;
-	
+
 	node = &vss->seqstate->ss;
 
 	/*
@@ -152,24 +135,8 @@ VExecScan(VectorScanState *vss,
 	}
 
 	/*
-	 * Check to see if we're still projecting out tuples from a previous scan
-	 * tuple (because there is a function-returning-set in the projection
-	 * expressions).  If so, try to project another one.
-	 */
-	if (node->ps.ps_TupFromTlist)
-	{
-		Assert(projInfo);		/* can't get here if not projecting */
-		resultSlot = ExecProject(projInfo, &isDone);
-		if (isDone == ExprMultipleResult)
-			return resultSlot;
-		/* Done with that source tuple... */
-		node->ps.ps_TupFromTlist = false;
-	}
-
-	/*
 	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.  Note this can't happen
-	 * until we're done projecting out tuples from a scan tuple.
+	 * storage allocated in the previous tuple cycle.
 	 */
 	ResetExprContext(econtext);
 
@@ -180,8 +147,6 @@ VExecScan(VectorScanState *vss,
 	for (;;)
 	{
 		TupleTableSlot *slot;
-
-		CHECK_FOR_INTERRUPTS();
 
 		slot = ExecScanFetch(vss, accessMtd, recheckMtd);
 
@@ -194,7 +159,7 @@ VExecScan(VectorScanState *vss,
 		if (TupIsNull(slot))
 		{
 			if (projInfo)
-				return ExecClearTuple(projInfo->pi_slot);
+				return ExecClearTuple(projInfo->pi_state.resultslot);
 			else
 				return slot;
 		}
@@ -207,11 +172,11 @@ VExecScan(VectorScanState *vss,
 		/*
 		 * check that the current tuple satisfies the qual-clause
 		 *
-		 * check for non-nil qual here to avoid a function call to ExecQual()
-		 * when the qual is nil ... saves only a few cycles, but they add up
+		 * check for non-null qual here to avoid a function call to ExecQual()
+		 * when the qual is null ... saves only a few cycles, but they add up
 		 * ...
 		 */
-		if (!qual || VExecScanQual(qual, econtext, false))
+		if (qual == NULL || ExecQual(qual, econtext))
 		{
 			/*
 			 * Found a satisfactory scan tuple.
@@ -220,16 +185,12 @@ VExecScan(VectorScanState *vss,
 			{
 				/*
 				 * Form a projection tuple, store it in the result tuple slot
-				 * and return it --- unless we find we can project no tuples
-				 * from this scan tuple, in which case continue scan.
+				 * and return it.
 				 */
-				resultSlot = ExecProject(projInfo, &isDone);
-				memcpy(((VectorTupleSlot*)resultSlot)->skip, ((VectorTupleSlot*)slot)->skip, sizeof(bool) * BATCHSIZE);
-				if (isDone != ExprEndResult)
-				{
-					node->ps.ps_TupFromTlist = (isDone == ExprMultipleResult);
-					return resultSlot;
-				}
+				resultSlot = ExecProject(projInfo);
+				memcpy(((VectorTupleSlot*)resultSlot)->skip, ((VectorTupleSlot*)slot)->skip, sizeof(bool) *  ((VectorTupleSlot*)slot)->dim);
+				((VectorTupleSlot*)resultSlot)->dim = ((VectorTupleSlot*)slot)->dim;
+				return resultSlot;
 			}
 			else
 			{

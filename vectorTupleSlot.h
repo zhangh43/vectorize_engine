@@ -17,40 +17,26 @@
 #include "storage/bufmgr.h"
 
 #include "vtype/vtype.h"
+
 /*
  * VectorTupleSlot store a batch of tuples in each slot.
  */
 typedef struct VectorTupleSlot
 {
-	TupleTableSlot	tts;
+	VirtualTupleTableSlot	tts;
 	/* how many tuples does this slot contain */ 
 	int32			dim;
-	int32			bufnum;
 
-	/* batch of physical tuples */
-	HeapTupleData	tts_tuples[BATCHSIZE];
-	/*
-	 * tuples in slot would across many heap blocks,
-	 * we need pin these buffers if needed.
-	 */
-	Buffer			tts_buffers[BATCHSIZE];
 	/* skip array to represent filtered tuples */
 	bool			skip[BATCHSIZE];
 } VectorTupleSlot;
 
 /* vector tuple slot related interface */
 
-extern TupleTableSlot *VMakeTupleTableSlot(void);
-extern TupleTableSlot *VExecAllocTableSlot(List **tupleTable);
-extern void InitializeVectorSlotColumn(VectorTupleSlot *vslot);
+extern TupleTableSlot *VMakeTupleTableSlot(TupleDesc tupDesc);
+extern TupleTableSlot *VExecAllocTableSlot(List **tupleTable, TupleDesc tupDesc);
 
-extern TupleTableSlot *VExecStoreTuple(HeapTuple tuple,
-			   TupleTableSlot *slot,
-			   Buffer buffer,
-			   bool shouldFree);
+extern void VExecStoreColumns(TupleTableSlot *dst_slot, TupleTableSlot *src_slot, int natts);
 extern TupleTableSlot *VExecClearTuple(TupleTableSlot *slot);
-
-extern void Vslot_getsomeattrs(TupleTableSlot *slot, int attnum);
-extern void Vslot_getallattrs(TupleTableSlot *slot);
 
 #endif

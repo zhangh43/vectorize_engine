@@ -93,6 +93,12 @@ CREATE TYPE vany ( INPUT = vany_in, OUTPUT = vany_out, storage=plain );
 
 -- create operators for the vectorized types
 
+CREATE FUNCTION vbool_and_vbool(vbool, vbool) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR & ( leftarg = vbool, rightarg = vbool, procedure = vbool_and_vbool);
+CREATE FUNCTION vbool_or_vbool(vbool, vbool) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR | ( leftarg = vbool, rightarg = vbool, procedure = vbool_or_vbool);
+
+
 CREATE FUNCTION vint2vint2gt(vint2, vint2) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
 CREATE OPERATOR > ( leftarg = vint2, rightarg = vint2, procedure = vint2vint2gt, commutator = <= );
 CREATE FUNCTION vint2vint2ge(vint2, vint2) RETURNS vbool AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
@@ -1011,8 +1017,69 @@ CREATE FUNCTION vdate_le_timestamp(vdate, timestamp) RETURNS vbool AS '$libdir/v
 CREATE OPERATOR <= ( leftarg = vdate, rightarg = timestamp, procedure = vdate_le_timestamp, commutator = <= );
 CREATE FUNCTION vdate_mi_interval(vdate, interval) RETURNS vtimestamp AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
 CREATE OPERATOR - ( leftarg = vdate, rightarg = interval, procedure = vdate_mi_interval, commutator = - );
-CREATE FUNCTION vdate_le(vdate, date) RETURNS vdate AS '$libdir/vectorize_engine' LANGUAGE C IMMUTABLE STRICT;
-CREATE OPERATOR <= ( leftarg = vdate, rightarg = date, procedure = vdate_le, commutator = <= );
+
+CREATE FUNCTION vdate_date_le(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4le' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <= ( leftarg = vdate, rightarg = date, procedure = vdate_date_le, commutator = > );
+CREATE FUNCTION vdate_date_ge(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4ge' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR >= ( leftarg = vdate, rightarg = date, procedure = vdate_date_ge, commutator = < );
+
+CREATE FUNCTION vdate_date_lt(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4lt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR < ( leftarg = vdate, rightarg = date, procedure = vdate_date_lt, commutator = >= );
+CREATE FUNCTION vdate_date_gt(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4gt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR > ( leftarg = vdate, rightarg = date, procedure = vdate_date_gt, commutator = <= );
+
+CREATE FUNCTION vdate_date_eq(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4eq' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR = ( leftarg = vdate, rightarg = date, procedure = vdate_date_eq, commutator = == );
+CREATE FUNCTION vdate_date_ne(vdate, date) RETURNS vbool AS '$libdir/vectorize_engine','vint4int4ne' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <> ( leftarg = vdate, rightarg = date, procedure = vdate_date_ne, commutator = <> );
+
+CREATE FUNCTION vdate_vdate_le(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4le' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <= ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_le, commutator = > );
+CREATE FUNCTION vdate_vdate_ge(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4ge' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR >= ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_ge, commutator = < );
+
+CREATE FUNCTION vdate_vdate_lt(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4lt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR < ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_lt, commutator = >= );
+CREATE FUNCTION vdate_vdate_gt(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4gt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR > ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_gt, commutator = <= );
+
+CREATE FUNCTION vdate_vdate_eq(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4eq' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR = ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_eq, commutator = == );
+CREATE FUNCTION vdate_vdate_ne(vdate, vdate) RETURNS vbool AS '$libdir/vectorize_engine','vint4vint4ne' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <> ( leftarg = vdate, rightarg = vdate, procedure = vdate_vdate_ne, commutator = <> );
+
+
+CREATE FUNCTION vtimestamp_timestamp_le(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8le' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <= ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_le, commutator = > );
+CREATE FUNCTION vtimestamp_timestamp_ge(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8ge' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR >= ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_ge, commutator = < );
+
+CREATE FUNCTION vtimestamp_timestamp_lt(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8lt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR < ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_lt, commutator = >= );
+CREATE FUNCTION vtimestamp_timestamp_gt(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8gt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR > ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_gt, commutator = <= );
+
+CREATE FUNCTION vtimestamp_timestamp_eq(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8eq' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR = ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_eq, commutator = == );
+CREATE FUNCTION vtimestamp_timestamp_ne(vtimestamp, timestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8int8ne' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <> ( leftarg = vtimestamp, rightarg = timestamp, procedure = vtimestamp_timestamp_ne, commutator = <> );
+
+CREATE FUNCTION vtimestamp_vtimestamp_le(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8le' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <= ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_le, commutator = > );
+CREATE FUNCTION vtimestamp_vtimestamp_ge(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8ge' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR >= ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_ge, commutator = < );
+
+CREATE FUNCTION vtimestamp_vtimestamp_lt(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8lt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR < ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_lt, commutator = >= );
+CREATE FUNCTION vtimestamp_vtimestamp_gt(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8gt' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR > ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_gt, commutator = <= );
+
+CREATE FUNCTION vtimestamp_vtimestamp_eq(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8eq' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR = ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_eq, commutator = == );
+CREATE FUNCTION vtimestamp_vtimestamp_ne(vtimestamp, vtimestamp) RETURNS vbool AS '$libdir/vectorize_engine','vint8vint8ne' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR <> ( leftarg = vtimestamp, rightarg = vtimestamp, procedure = vtimestamp_vtimestamp_ne, commutator = <> );
+
+
 
 
 --create count aggregate functions
@@ -1039,3 +1106,5 @@ create AGGREGATE avg(vfloat8) (
     finalfunc = vfloat8_avg, 
 	INITCOND = '{0,0,0}',
     stype = bytea);
+
+CREATE FUNCTION vbool_to_bool(internal) RETURNS bool as '$libdir/vectorize_engine' language c immutable strict;

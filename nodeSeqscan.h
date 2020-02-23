@@ -20,7 +20,9 @@ typedef struct VectorScanState
 
 	/* Attributes for vectorization */
 	SeqScanState	*seqstate;
-	bool		scanFinish;
+	bool		     scanFinish;
+	int              maxVarattno;
+	TupleTableSlot  *slot;
 } VectorScanState;
 
 extern CustomScan *MakeCustomScanForSeqScan(void);

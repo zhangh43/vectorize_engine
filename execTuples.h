@@ -13,7 +13,7 @@
  * prototypes from functions in execTuples.c
  */
 extern void VExecInitResultTupleSlot(EState *estate, PlanState *planstate);
-extern void VExecInitScanTupleSlot(EState *estate, ScanState *scanstate);
-extern TupleTableSlot *VExecInitExtraTupleSlot(EState *estate);
+extern void VExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupledesc);
+extern TupleTableSlot *VExecInitExtraTupleSlot(EState *estate, TupleDesc tupledesc);
 extern void VExecAssignResultTypeFromTL(PlanState *planstate);
 #endif

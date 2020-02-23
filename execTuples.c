@@ -82,7 +82,6 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/tuptoaster.h"
 #include "funcapi.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
@@ -96,10 +95,6 @@
 #include "utils.h"
 #include "vectorTupleSlot.h"
 
-/* static vectorized functions */
-static void VExecAssignResultType(PlanState *planstate, TupleDesc tupDesc);
-
-
 /* ----------------
  *		VExecInitResultTupleSlot
  * ----------------
@@ -107,7 +102,11 @@ static void VExecAssignResultType(PlanState *planstate, TupleDesc tupDesc);
 void
 VExecInitResultTupleSlot(EState *estate, PlanState *planstate)
 {
-	planstate->ps_ResultTupleSlot = VExecAllocTableSlot(&estate->es_tupleTable);
+	planstate->ps_ResultTupleSlot = VExecAllocTableSlot(&estate->es_tupleTable,
+														planstate->ps_ResultTupleDesc);
+	planstate->resultopsfixed = planstate->ps_ResultTupleDesc != NULL;
+	planstate->resultops = planstate->ps_ResultTupleSlot->tts_ops;
+	planstate->resultopsset = true;
 }
 
 /* ----------------
@@ -115,9 +114,14 @@ VExecInitResultTupleSlot(EState *estate, PlanState *planstate)
  * ----------------
  */
 void
-VExecInitScanTupleSlot(EState *estate, ScanState *scanstate)
+VExecInitScanTupleSlot(EState *estate, ScanState *scanstate, TupleDesc tupledesc)
 {
-	scanstate->ss_ScanTupleSlot = VExecAllocTableSlot(&estate->es_tupleTable);
+	scanstate->ss_ScanTupleSlot = VExecAllocTableSlot(&estate->es_tupleTable,
+													 tupledesc);
+	scanstate->ps.scandesc = tupledesc;
+	scanstate->ps.scanopsfixed = tupledesc != NULL;
+	scanstate->ps.scanops = scanstate->ss_ScanTupleSlot->tts_ops;
+	scanstate->ps.scanopsset = true;
 }
 
 /* ----------------
@@ -125,54 +129,10 @@ VExecInitScanTupleSlot(EState *estate, ScanState *scanstate)
  * ----------------
  */
 TupleTableSlot *
-VExecInitExtraTupleSlot(EState *estate)
+VExecInitExtraTupleSlot(EState *estate,
+						TupleDesc tupledesc)
 {
-	return VExecAllocTableSlot(&estate->es_tupleTable);
+	return VExecAllocTableSlot(&estate->es_tupleTable, tupledesc);
 }
 
 
-/* ----------------
- *		VExecAssignResultTypeFromTL
- * ----------------
- */
-void
-VExecAssignResultTypeFromTL(PlanState *planstate)
-{
-	bool		hasoid;
-	TupleDesc	tupDesc;
-
-	if (ExecContextForcesOids(planstate, &hasoid))
-	{
-		/* context forces OID choice; hasoid is now set correctly */
-	}
-	else
-	{
-		/* given free choice, don't leave space for OIDs in result tuples */
-		hasoid = false;
-	}
-
-	/*
-	 * ExecTypeFromTL needs the parse-time representation of the tlist, not a
-	 * list of ExprStates.  This is good because some plan nodes don't bother
-	 * to set up planstate->targetlist ...
-	 */
-	tupDesc = ExecTypeFromTL(planstate->plan->targetlist, hasoid);
-	VExecAssignResultType(planstate, tupDesc);
-}
-
-
-/* ----------------
- *		VExecAssignResultType
- * ----------------
- */
-static void
-VExecAssignResultType(PlanState *planstate, TupleDesc tupDesc)
-{
-	TupleTableSlot	*slot;
-	
-	slot = planstate->ps_ResultTupleSlot;
-
-	ExecSetSlotDescriptor(slot, tupDesc);
-
-	InitializeVectorSlotColumn((VectorTupleSlot *)slot);
-}

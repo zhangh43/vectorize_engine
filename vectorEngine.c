@@ -16,7 +16,7 @@
 
 #include "nodeUnbatch.h"
 #include "nodeSeqscan.h"
-#include "nodeAgg.h"
+#include "executor.h"
 #include "plan.h"
 
 PG_MODULE_MAGIC;
@@ -40,6 +40,8 @@ vector_post_planner(Query	*parse,
 	PlannedStmt	*stmt;
 	Plan		*savedPlanTree;
 	List		*savedSubplan;
+	MemoryContext saved_context;
+	VectorizedContext ctx;
 
 	if (planner_hook_next)
 		stmt = planner_hook_next(parse, cursorOptions, boundParams);
@@ -52,17 +54,22 @@ vector_post_planner(Query	*parse,
 	/* modify plan by using vectorized nodes */
 	savedPlanTree = stmt->planTree;
 	savedSubplan = stmt->subplans;
+	ctx.maxAttvarno = palloc0(list_length(stmt->rtable) * sizeof(int));
+	ctx.level = 0;
+	ctx.parent = NULL;
+	ctx.node = NULL;
 
+	saved_context = CurrentMemoryContext;
 	PG_TRY();
 	{
 		List		*subplans = NULL;
 		ListCell	*cell;
 
-		stmt->planTree = ReplacePlanNodeWalker((Node *) stmt->planTree);
+		stmt->planTree = ReplacePlanNodeWalker((Node *) stmt->planTree, &ctx);
 
 		foreach(cell, stmt->subplans)
 		{
-			Plan	*subplan = ReplacePlanNodeWalker((Node *)lfirst(cell));
+			Plan	*subplan = ReplacePlanNodeWalker((Node *)lfirst(cell), &ctx);
 			subplans = lappend(subplans, subplan);
 		}
 		stmt->subplans = subplans;
@@ -76,6 +83,8 @@ vector_post_planner(Query	*parse,
 	PG_CATCH();
 	{
 		ErrorData  *edata;
+		MemoryContextSwitchTo(saved_context);
+
 		edata = CopyErrorData();
 		FlushErrorState();
 		if (enable_vectorize_notice)
@@ -105,7 +114,7 @@ _PG_init(void)
     planner_hook_next = planner_hook;
     planner_hook = vector_post_planner;
 
-	DefineCustomBoolVariable("enable_vectorize_engine",
+	DefineCustomBoolVariable("vectorize_engine.enable",
 							 "Enables vectorize engine.",
 							 NULL,
 							 &enable_vectorize_engine,
@@ -114,7 +123,7 @@ _PG_init(void)
 							 GUC_NOT_IN_SAMPLE,
 							 NULL, NULL, NULL);
 
-	DefineCustomBoolVariable("enable_vectorize_notice",
+	DefineCustomBoolVariable("vectorize_engine.notice",
 							 "Enables vectorize engine.",
 							 NULL,
 							 &enable_vectorize_notice,

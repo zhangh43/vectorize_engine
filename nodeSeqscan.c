@@ -27,6 +27,7 @@
 #include "postgres.h"
 
 #include "access/relscan.h"
+#include "access/heapam.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
@@ -92,12 +93,13 @@ static Node *
 CreateVectorScanState(CustomScan *custom_plan)
 {
 	VectorScanState   *vss = MemoryContextAllocZero(CurTransactionContext,
-				                                                 sizeof(VectorScanState));
+													sizeof(VectorScanState));
 	/* Set tag and executor callbacks */
 	NodeSetTag(vss, T_CustomScanState);
 
 	vss->css.methods = &vectorscan_exec_methods;
-
+	if (custom_plan->custom_private)
+		vss->maxVarattno = linitial_int(custom_plan->custom_private);
 	return (Node *) vss;
 }
 
@@ -112,17 +114,21 @@ BeginVectorScan(CustomScanState *css, EState *estate, int eflags)
 	VectorScanState *vss;
 	CustomScan  *cscan;
 	SeqScan		*node;
-	
+
 	/* clear state initialized in ExecInitCustomScan */
 	ClearCustomScanState(css);
 
 	cscan = (CustomScan *)css->ss.ps.plan;
 	node = (SeqScan *)linitial(cscan->custom_plans);
-	
+
 	vss = (VectorScanState*)css;
 	vss->scanFinish = false;
 
 	vss->seqstate = VExecInitSeqScan(node, estate, eflags);
+	Assert(vss->seqstate->ss.ss_currentRelation != InvalidOid);
+	vss->slot = ExecAllocTableSlot(&estate->es_tupleTable,
+								   RelationGetDescr(vss->seqstate->ss.ss_currentRelation),
+								   table_slot_callbacks(vss->seqstate->ss.ss_currentRelation));
 
 	vss->css.ss.ps.ps_ResultTupleSlot = vss->seqstate->ss.ps.ps_ResultTupleSlot;
 }
@@ -204,15 +210,13 @@ InitVectorScan(void)
 static TupleTableSlot *
 VSeqNext(VectorScanState *vss)
 {
-	HeapTuple	tuple;
-	HeapScanDesc scandesc;
+	TableScanDesc scandesc;
 	EState	   *estate;
 	ScanDirection direction;
 	TupleTableSlot *slot;
-	VectorTupleSlot	*vslot;
 	int				row;
 	SeqScanState	*node = vss->seqstate;
-	
+
 	/*
 	 * get information from the estate and scan state
 	 */
@@ -227,66 +231,41 @@ VSeqNext(VectorScanState *vss)
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		scandesc = heap_beginscan(node->ss.ss_currentRelation,
-								  estate->es_snapshot,
-								  0, NULL);
+		scandesc = table_beginscan(node->ss.ss_currentRelation,
+								   estate->es_snapshot,
+								   0, NULL);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
-	vslot = (VectorTupleSlot *)slot;
-
-	/* return the last batch. */
-	if (vss->scanFinish)
-	{
-		VExecClearTuple(slot);
-		return slot;
-	}
 	VExecClearTuple(slot);
 
-	/* fetch a batch of rows and fill them into VectorTupleSlot */
-	for (row = 0 ; row < BATCHSIZE; row++)
+	/* return the last batch. */
+	if (!vss->scanFinish)
 	{
-		/*
-		 * get the next tuple from the table
-		 */
-		tuple = heap_getnext(scandesc, direction);
-
-		/*
-		 * save the tuple and the buffer returned to us by the access methods in
-		 * our scan tuple slot and return the slot.  Note: we pass 'false' because
-		 * tuples returned by heap_getnext() are pointers onto disk pages and were
-		 * not created with palloc() and so should not be pfree()'d.  Note also
-		 * that ExecStoreTuple will increment the refcount of the buffer; the
-		 * refcount will not be dropped until the tuple table slot is cleared.
-		 */
-		if (tuple)
-			VExecStoreTuple(tuple,	/* tuple to store */
-					slot,	/* slot to store in */
-					scandesc->rs_cbuf,		/* buffer associated with this
-											 * tuple */
-					false);	/* don't pfree this pointer */
-		else
+		int natts = vss->maxVarattno ? vss->maxVarattno : vss->slot->tts_tupleDescriptor->natts;
+		/* fetch a batch of rows and fill them into VectorTupleSlot */
+		for (row = 0; row < BATCHSIZE; row++)
 		{
-			/* scan finish, but we still need to emit current vslot */
-			vss->scanFinish = true;
-			break;
+			/*
+			 * get the next tuple from the table
+			 */
+			if (table_scan_getnextslot(scandesc, direction, vss->slot))
+			{
+				slot_getsomeattrs(vss->slot, natts);
+				VExecStoreColumns(slot, vss->slot, natts);
+			}
+			else
+			{
+				/* scan finish, but we still need to emit current slot */
+				vss->scanFinish = true;
+				break;
+			}
+		}
+		if (row > 0)
+		{
+			ExecStoreVirtualTuple(slot);
 		}
 	}
-
-	/*
-	 * deform and generate virtual tuple
-	 * TODO: late deform to avoid deform unneccessary columns.
-	 */
-	if (row > 0)
-	{
-		vslot->dim = row;
-		memset(vslot->skip, false, sizeof(bool) * row);
-		
-		/* deform the vector slot now */
-		Vslot_getallattrs(slot);
-		ExecStoreVirtualTuple(slot);
-	}
-
 	return slot;
 }
 
@@ -329,31 +308,26 @@ VExecSeqScan(VectorScanState *node)
 static void
 VInitScanRelation(SeqScanState *node, EState *estate, int eflags)
 {
-	Relation	currentRelation;
 	TupleDesc	vdesc;
-	TupleTableSlot *slot;
 	int 		i;
 
 	/*
-	 * get the relation object id from the relid'th entry in the range table,
-	 * open that relation and acquire appropriate lock on it.
+	 * open the scan relation
 	 */
-	currentRelation = ExecOpenScanRelation(estate,
-								   ((SeqScan *) node->ss.ps.plan)->scanrelid,
-										   eflags);
+	node->ss.ss_currentRelation =
+		ExecOpenScanRelation(estate,
+							 ((SeqScan *) node->ss.ps.plan)->scanrelid,
+							 eflags);
 
-	node->ss.ss_currentRelation = currentRelation;
-
-	/* 
+	/*
 	 * since we will change the attr type of tuple desc to vector
 	 * type. we need to copy it to avoid dirty the relcache
 	 */
-	vdesc = CreateTupleDescCopyConstr(RelationGetDescr(currentRelation));
-
+	vdesc = CreateTupleDescCopy(RelationGetDescr(node->ss.ss_currentRelation));
 	/* change the attr type of tuple desc to vector type */
 	for (i = 0; i < vdesc->natts; i++)
 	{
-		Form_pg_attribute	attr = vdesc->attrs[i];
+		Form_pg_attribute	attr = TupleDescAttr(vdesc, i);
 		Oid					vtypid = GetVtype(attr->atttypid);
 		if (vtypid != InvalidOid)
 			attr->atttypid = vtypid;
@@ -361,12 +335,7 @@ VInitScanRelation(SeqScanState *node, EState *estate, int eflags)
 			elog(ERROR, "cannot find vectorized type for type %d",
 					attr->atttypid);
 	}
-
-	/* and report the scan tuple slot's rowtype */
-	ExecAssignScanType(&node->ss, vdesc);
-
-	slot = node->ss.ss_ScanTupleSlot;
-	InitializeVectorSlotColumn((VectorTupleSlot *)slot);
+	VExecInitScanTupleSlot(estate, &node->ss, vdesc);
 }
 
 /* ----------------------------------------------------------------
@@ -391,6 +360,7 @@ VExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	scanstate = makeNode(SeqScanState);
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
+	scanstate->ss.ps.ExecProcNode = (ExecProcNodeMtd)VExecSeqScan;
 
 	/*
 	 * Miscellaneous initialization
@@ -400,33 +370,28 @@ VExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
 
 	/*
-	 * initialize child expressions
+	 * initialize scan relation
 	 */
-	scanstate->ss.ps.targetlist = (List *)
-		ExecInitExpr((Expr *) node->plan.targetlist,
-					 (PlanState *) scanstate);
-	scanstate->ss.ps.qual = (List *)
-		ExecInitExpr((Expr *) node->plan.qual,
-					 (PlanState *) scanstate);
+	VInitScanRelation(scanstate, estate, eflags);
+
+	/*
+	 * Initialize result type and projection.
+	 */
+	ExecInitResultTypeTL(&scanstate->ss.ps);
 
 	/*
 	 * tuple table initialization
 	 */
 	VExecInitResultTupleSlot(estate, &scanstate->ss.ps);
-	VExecInitScanTupleSlot(estate, &scanstate->ss);
 
-	/*
-	 * initialize scan relation
-	 */
-	VInitScanRelation(scanstate, estate, eflags);
-
-	scanstate->ss.ps.ps_TupFromTlist = false;
-
-	/*
-	 * Initialize result tuple type and projection info.
-	 */
-	VExecAssignResultTypeFromTL(&scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
+
+	/*
+	 * initialize child expressions
+	 */
+	scanstate->ss.ps.qual =
+		ExecInitQual(node->plan.qual,
+					 (PlanState *) scanstate);
 
 	return scanstate;
 }
@@ -440,14 +405,12 @@ VExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 static void
 VExecEndSeqScan(VectorScanState *vss)
 {
-	Relation	relation;
-	HeapScanDesc scanDesc;
+	TableScanDesc scanDesc;
 	SeqScanState *node = vss->seqstate;
 
 	/*
 	 * get information from node
 	 */
-	relation = node->ss.ss_currentRelation;
 	scanDesc = node->ss.ss_currentScanDesc;
 
 	/*
@@ -466,11 +429,6 @@ VExecEndSeqScan(VectorScanState *vss)
 	 */
 	if (scanDesc != NULL)
 		heap_endscan(scanDesc);
-
-	/*
-	 * close the heap relation.
-	 */
-	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------

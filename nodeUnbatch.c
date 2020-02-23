@@ -12,12 +12,15 @@
 #include "fmgr.h"
 #include "optimizer/planner.h"
 #include "executor/nodeCustom.h"
+#include "nodes/extensible.h"
 
 #include "nodeUnbatch.h"
 #include "execTuples.h"
 #include "vtype/vtype.h"
 #include "utils.h"
 #include "vectorTupleSlot.h"
+#include "executor.h"
+#include "plan.h"
 
 
 /*
@@ -71,21 +74,20 @@ BeginUnbatch(CustomScanState *node, EState *estate, int eflags)
 
 	/* Convert Vtype in tupdesc to Ntype in unbatch Node */
 	{
-		node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
-		tupdesc = node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor;
-
+		int natts = node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor->natts;
+		tupdesc = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+		node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor = tupdesc;
+		tupdesc->natts = natts;
 		for (int i = 0; i < tupdesc->natts; i++)
 		{
-			Form_pg_attribute attr = tupdesc->attrs[i];
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 			Oid         typid = GetNtype(attr->atttypid);
 			if (typid != InvalidOid)
 				attr->atttypid = typid;
 		}
-		ExecSetSlotDescriptor(node->ss.ps.ps_ResultTupleSlot, tupdesc);
 	}
 
-	vcs->ps_ResultVTupleSlot = VExecInitExtraTupleSlot(estate);
-	vcs->ps_ResultVTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+	vcs->ps_ResultVTupleSlot = VExecInitExtraTupleSlot(estate, CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor));
 }
 
 static TupleTableSlot*
@@ -97,24 +99,25 @@ FetchRowFromBatch(UnbatchState *ubs)
 	int					natts;
 	int					i;
 
-	
 	slot = ubs->css.ss.ps.ps_ResultTupleSlot;
 	vslot = (VectorTupleSlot *)ubs->ps_ResultVTupleSlot;
 	iter = ubs->iter;
 
-	while(iter < BATCHSIZE && vslot->skip[iter])
+	while(iter < vslot->dim && vslot->skip[iter])
 		iter++;
-	
+
 	/* we have checked that natts is greater than zero */
-	if (iter == BATCHSIZE)
+	if (iter == vslot->dim)
 		return NULL;
 
 	ExecClearTuple(slot);
 	natts = slot->tts_tupleDescriptor->natts;
-	for(i = 0; i < natts; i++)
+
+	for (i = 0; i < natts; i++)
 	{
-		slot->tts_values[i] = ((vtype*)(vslot->tts.tts_values[i]))->values[iter];
-		slot->tts_isnull[i] = false;
+		vtype* column = (vtype*)vslot->tts.base.tts_values[i];
+		slot->tts_values[i] = column->values[iter];
+		slot->tts_isnull[i] = column->isnull[iter];
 	}
 
 	ubs->iter = ++iter;
@@ -134,14 +137,14 @@ ExecUnbatch(CustomScanState *node)
 	/* find a non skip tuple and return to client */
 	while(true)
 	{
-		/* 
+		/*
 		 * iter = 0 indicate we finish unbatching the vector slot
 		 * and need to read next vector slot
 		 */
 		slot = FetchRowFromBatch(ubs);
 		if(slot)
 			break;
-		
+
 		/* finish current batch, read next batch */
 		if (!ReadNextVectorSlot(ubs))
 			return NULL;
@@ -197,6 +200,8 @@ Plan *
 AddUnbatchNodeAtTop(Plan *node)
 {
     CustomScan *convert = makeNode(CustomScan);
+	convert->scan.plan.targetlist = CustomBuildTlist(node->targetlist);
+	convert->custom_scan_tlist = node->targetlist;
     convert->methods = &unbatch_methods;
 	convert->scan.plan.lefttree = node;
     convert->scan.plan.righttree = NULL;

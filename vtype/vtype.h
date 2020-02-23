@@ -23,10 +23,17 @@
 #include "postgres.h"
 #include "fmgr.h"
 
+#ifdef bool
+#undef bool
+typedef _Bool bool;
+#endif
+
 typedef int16 int2;
 typedef int32 int4;
 
 #define BATCHSIZE 1024
+//#define BATCHSIZE 256
+
 typedef struct vtype {
 	Oid     elemtype;
 	int     dim;
@@ -43,7 +50,7 @@ typedef struct vtype {
 #define VTYPESIZE(dim) (VTYPEHEADERSZ + VDATUMSZ(dim) + CANARYSIZE + ISNULLSZ(dim))
 #define CANARYOFFSET(vtype) ((char*)((unsigned char*)vtype + VTYPEHEADERSZ + VDATUMSZ(dim)))
 #define ISNULLOFFSET(vtype) ((bool*)((unsigned char*)vtype + VTYPEHEADERSZ + VDATUMSZ(vtype->dim) + CANARYSIZE))
-#define VTYPE_STURCTURE(type) typedef struct vtype v##type;
+#define VTYPE_STRUCTURE(type) typedef struct vtype v##type;
 
 #define FUNCTION_BUILD_HEADER(type) \
 v##type* buildv##type(int dim, bool *skip);
@@ -163,7 +170,7 @@ extern Datum v##type##out(PG_FUNCTION_ARGS);
     FUNCTION_CMP_RCONST_HEADER(type) \
 
 #define TYPE_HEADER(type,oid) \
-    VTYPE_STURCTURE(type) \
+    VTYPE_STRUCTURE(type) \
 	FUNCTION_BUILD_HEADER(type) \
     FUNCTION_OP_ALL_HEADER(type) \
     FUNCTION_IN_HEADER(type, typeoid) \

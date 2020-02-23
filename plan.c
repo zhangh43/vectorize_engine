@@ -15,7 +15,6 @@
 #include "miscadmin.h"
 #include "access/htup_details.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/var.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_func.h"
 #include "parser/parse_coerce.h"
@@ -23,17 +22,17 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
-#include "nodes/relation.h"
 #include "nodes/nodes.h"
 #include "nodes/parsenodes.h"
+#include "parser/parse_func.h"
 #include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 #include "plan.h"
 #include "nodeSeqscan.h"
-#include "nodeAgg.h"
 #include "utils.h"
+#include "executor.h"
 
 static void mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context);
 static Node * plan_tree_mutator(Node *node, Node *(*mutator) (), void *context);
@@ -44,10 +43,6 @@ static Node * plan_tree_mutator(Node *node, Node *(*mutator) (), void *context);
  * so the retType in Vectorized is a temporary values, after we check on expression,
  * we set the retType of this expression, and transfer this value to his parent.
  */
-typedef struct VectorizedContext
-{
-	Oid			retType;
-}VectorizedContext;
 
 static Oid getNodeReturnType(Node *node);
 
@@ -63,6 +58,8 @@ getNodeReturnType(Node *node)
 			return ((Const*)node)->consttype;
 		case T_OpExpr:
 			return ((OpExpr*)node)->opresulttype;
+		case T_BoolExpr:
+			return BOOLOID;
 		default:
 		{
 			elog(ERROR, "Node return type %d not supported", nodeTag(node));
@@ -77,10 +74,17 @@ getNodeReturnType(Node *node)
  * over...
  */
 static Node*
-VectorizeMutator(Node *node, VectorizedContext *ctx)
+VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 {
+	VectorizedContext ctx;
+
 	if(NULL == node)
 		return NULL;
+
+	ctx.level = parent_ctx->level + 1;
+	ctx.parent = parent_ctx;
+	ctx.node = node;
+	ctx.maxAttvarno = parent_ctx->maxAttvarno;
 
 	//check the type of Var if it can be vectorized
 	switch (nodeTag(node))
@@ -89,10 +93,14 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 			{
 				Var *newnode;
 				Oid vtype;
-
-				newnode = (Var*)plan_tree_mutator(node, VectorizeMutator, ctx);
+				newnode = (Var*)plan_tree_mutator(node, VectorizeMutator, &ctx);
 				vtype = GetVtype(newnode->vartype);
-				if(InvalidOid == vtype)
+				if (!IS_SPECIAL_VARNO(newnode->varno) && newnode->varattno > 0
+					&& (nodeTag(parent_ctx->node) != T_TargetEntry || ctx.level <= 3))
+				{
+					ctx.maxAttvarno[newnode->varno-1] = Max(ctx.maxAttvarno[newnode->varno-1], newnode->varattno);
+				}
+				if (InvalidOid == vtype)
 				{
 					elog(ERROR, "Cannot find vtype for type %d", newnode->vartype);
 				}
@@ -117,7 +125,7 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				Oid		   *true_oid_array;
 				FuncDetailCode	fdresult;
 
-				newnode = (Aggref *)plan_tree_mutator(node, VectorizeMutator, ctx);
+				newnode = (Aggref *)plan_tree_mutator(node, VectorizeMutator, &ctx);
 				oldfnOid = newnode->aggfnoid;
 
 				proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(oldfnOid));
@@ -130,7 +138,7 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				argtypes = palloc(sizeof(Oid) * procform->pronargs);
 				for (i = 0; i < procform->pronargs; i++)
 					argtypes[i] = GetVtype(procform->proargtypes.values[i]);
-				
+
 				fdresult = func_get_detail(funcname, NIL, NIL,
 						procform->pronargs, argtypes, false, false,
 						&newnode->aggfnoid, &retype, &retset,
@@ -145,6 +153,41 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				return (Node *)newnode;
 			}
 
+		case T_BoolExpr:
+            {
+				BoolExpr *bool_expr;
+				OpExpr *bin_expr;
+				Oid		ltype, rtype;
+				Form_pg_operator	voper;
+				HeapTuple			tuple;
+
+				/* mutate OpExpr itself in plan_tree_mutator firstly. */
+				bool_expr = (BoolExpr *)plan_tree_mutator(node, VectorizeMutator, &ctx);
+				if (list_length(bool_expr->args) != 2)
+				{
+					elog(ERROR, "Unary operator not supported");
+				}
+				ltype = getNodeReturnType(linitial(bool_expr->args));
+				rtype = getNodeReturnType(lsecond(bool_expr->args));
+
+				//get the vectorized operator functions
+				tuple = oper(NULL, list_make1(makeString(bool_expr->boolop == AND_EXPR ? "&" : "|")),
+ 							 ltype, rtype, true, -1);
+				if (NULL == tuple)
+				{
+					elog(ERROR, "Vectorized operator not found");
+				}
+
+				voper = (Form_pg_operator)GETSTRUCT(tuple);
+				bin_expr = (OpExpr*)make_opclause(voper->oid, voper->oprresult, false,
+												  linitial(bool_expr->args),
+												  lsecond(bool_expr->args),
+												  InvalidOid, InvalidOid);
+				bin_expr->opfuncid = voper->oprcode;
+
+				ReleaseSysCache(tuple);
+				return (Node *)bin_expr;
+			}
 		case T_OpExpr:
 			{
 				OpExpr	*newnode;
@@ -153,7 +196,7 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 				HeapTuple			tuple;
 
 				/* mutate OpExpr itself in plan_tree_mutator firstly. */
-				newnode = (OpExpr *)plan_tree_mutator(node, VectorizeMutator, ctx);
+				newnode = (OpExpr *)plan_tree_mutator(node, VectorizeMutator, &ctx);
 				rettype = GetVtype(newnode->opresulttype);
 				if (InvalidOid == rettype)
 				{
@@ -190,8 +233,34 @@ VectorizeMutator(Node *node, VectorizedContext *ctx)
 			}
 
 		default:
-			return plan_tree_mutator(node, VectorizeMutator, ctx);
+			return plan_tree_mutator(node, VectorizeMutator, &ctx);
 	}
+}
+
+List*
+CustomBuildTlist(List* tlist)
+{
+	List	   *result_tlist = NIL;
+	ListCell   *lc;
+
+	foreach (lc, tlist)
+    {
+		TargetEntry	*tle = (TargetEntry *) lfirst(lc);
+		Var *var = makeVar(INDEX_VAR,	/* point to subplan's elements */
+						   tle->resno,
+						   exprType((Node *) tle->expr),
+						   exprTypmod((Node *) tle->expr),
+						   exprCollation((Node *) tle->expr),
+						   0);
+
+		TargetEntry *newtle = makeTargetEntry((Expr *) var,
+											  tle->resno,
+											  tle->resname,
+											  tle->resjunk);
+		result_tlist = lappend(result_tlist, newtle);
+	}
+
+	return result_tlist;
 }
 
 
@@ -200,6 +269,8 @@ plan_tree_mutator(Node *node,
 				  Node *(*mutator) (),
 				  void *context)
 {
+	VectorizedContext* ctx = (VectorizedContext*)context;
+
 	/*
 	 * The mutator has already decided not to modify the current node, but we
 	 * must call the mutator for any sub-nodes.
@@ -259,8 +330,11 @@ plan_tree_mutator(Node *node,
 				cscan = MakeCustomScanForSeqScan();
 				FLATCOPY(vscan, node, SeqScan);
 				cscan->custom_plans = lappend(cscan->custom_plans, vscan);
-
 				SCANMUTATE(vscan, node);
+				cscan->scan.plan.targetlist = CustomBuildTlist(vscan->plan.targetlist);
+				if (vscan->scanrelid > 0)
+					cscan->custom_private = list_make1_int(ctx->maxAttvarno[vscan->scanrelid-1]);
+				cscan->custom_scan_tlist = vscan->plan.targetlist;
 				return (Node *)cscan;
 			}
 
@@ -268,15 +342,17 @@ plan_tree_mutator(Node *node,
 			{
 				CustomScan	*cscan;
 				Agg			*vagg;
-	
+
 				if (((Agg *)node)->aggstrategy != AGG_PLAIN && ((Agg *)node)->aggstrategy != AGG_HASHED)
 					elog(ERROR, "Non plain agg is not supported");
 
 				cscan = MakeCustomScanForAgg();
 				FLATCOPY(vagg, node, Agg);
 				cscan->custom_plans = lappend(cscan->custom_plans, vagg);
-
 				SCANMUTATE(vagg, node);
+				cscan->scan.plan.targetlist = CustomBuildTlist(vagg->plan.targetlist);
+				cscan->custom_scan_tlist = vagg->plan.targetlist;
+
 				return (Node *)cscan;
 			}
 		case T_Const:
@@ -361,9 +437,8 @@ plan_tree_mutator(Node *node,
 				MUTATE(newnode->aggfilter, aggref->aggfilter, Expr *);
 				return (Node *) newnode;
 			}
-			break;
 
-		default:
+	  default:
 			elog(ERROR, "node type %d not supported", nodeTag(node));
 			break;
 	}
@@ -378,6 +453,44 @@ plan_tree_mutator(Node *node,
 static void
 mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context)
 {
+	List* conjuncts = (List*)mutator((Node*)oldplan->qual, context);
+	int n_conjuncts = list_length(conjuncts);
+	if (n_conjuncts > 1)
+	{
+		int i;
+		Form_pg_operator	voper;
+		Expr* right = (Expr*)list_nth(conjuncts, n_conjuncts-1);
+		Oid vbool_type = getNodeReturnType((Node*)right);
+		HeapTuple tuple = oper(NULL, list_make1(makeString("&")),
+							   vbool_type, vbool_type, true, -1);
+		if (NULL == tuple)
+		{
+			elog(ERROR, "Vectorized operator not found");
+		}
+		voper = (Form_pg_operator)GETSTRUCT(tuple);
+		for (i = n_conjuncts-2; i >= 0; i--)
+		{
+			Expr* left =  (Expr*)list_nth(conjuncts, i);
+			Assert(getNodeReturnType((Node*)left) == vbool_type);
+			right = (Expr*)make_opclause(voper->oid, voper->oprresult, false,
+										 left, right, InvalidOid, InvalidOid);
+			((OpExpr*)right)->opfuncid = voper->oprcode;
+		}
+		conjuncts = list_make1(right);
+		ReleaseSysCache(tuple);
+	}
+	if (n_conjuncts != 0)
+	{
+		static Oid argtype = INTERNALOID;
+		static Oid vbool_to_bool_oid = InvalidOid;
+		if (vbool_to_bool_oid == InvalidOid)
+			vbool_to_bool_oid = LookupFuncName(list_make1(makeString("vbool_to_bool")), 1, &argtype, false);
+		linitial(conjuncts) = makeFuncExpr(vbool_to_bool_oid, BOOLOID,
+										   list_make1(linitial(conjuncts)),
+										   InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+	}
+	newplan->qual = conjuncts;
+
 	/*
 	 * Scalar fields startup_cost total_cost plan_rows plan_width nParamExec
 	 * need no mutation.
@@ -385,7 +498,6 @@ mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *cont
 
 	/* Node fields need mutation. */
 	MUTATE(newplan->targetlist, oldplan->targetlist, List *);
-	MUTATE(newplan->qual, oldplan->qual, List *);
 	MUTATE(newplan->lefttree, oldplan->lefttree, Plan *);
 	MUTATE(newplan->righttree, oldplan->righttree, Plan *);
 	MUTATE(newplan->initPlan, oldplan->initPlan, List *);
@@ -399,7 +511,7 @@ mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *cont
  * Replace the non-vectorirzed type to vectorized type
  */
 Plan* 
-ReplacePlanNodeWalker(Node *node)
+ReplacePlanNodeWalker(Node *node, VectorizedContext* ctx)
 {
-	return (Plan *)plan_tree_mutator(node, VectorizeMutator, NULL);
+	return (Plan *)plan_tree_mutator(node, VectorizeMutator, ctx);
 }

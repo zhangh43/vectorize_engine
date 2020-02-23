@@ -7,7 +7,7 @@
 
 #include "nodeSeqscan.h"
 
-extern bool VExecScanQual(List *qual, ExprContext *econtext, bool resultForNull);
+extern bool VExecScanQual(ExprState *qual, ExprContext *econtext, bool resultForNull);
 /*
  * prototypes from functions in execScan.c
  */
@@ -17,4 +17,11 @@ typedef bool (*VExecScanRecheckMtd) (VectorScanState *node, TupleTableSlot *slot
 TupleTableSlot *
 VExecScan(VectorScanState* node, VExecScanAccessMtd accessMtd,
 			VExecScanRecheckMtd recheckMtd);
+
+/*
+ * VectorAggState - state object of vectoragg on executor.
+ */
+extern CustomScan *MakeCustomScanForAgg(void);
+extern void InitVectorAgg(void);
+
 #endif

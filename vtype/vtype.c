@@ -129,31 +129,24 @@ v##fname##out(PG_FUNCTION_ARGS) \
  * we have not processed the overflow so far.
  */
 #define __FUNCTION_OP(type1, XTYPE1, type2, XTYPE2, opsym, opstr) \
-PG_FUNCTION_INFO_V1(v##type1##v##type2##opstr); \
-Datum \
-v##type1##v##type2##opstr(PG_FUNCTION_ARGS) \
-{ \
-    int size = 0; \
-    int i = 0; \
-    v##type1 *arg1 = (v##type1*)PG_GETARG_POINTER(0); \
-    v##type2 *arg2 = (v##type2*)PG_GETARG_POINTER(1); \
-    v##type1 *res = buildv##type1(BATCHSIZE, arg1->skipref); \
-    Assert(arg1->dim == arg2->dim); \
-    size = arg1->dim; \
-    while(i < size) \
-    { \
+PG_FUNCTION_INFO_V1(v##type1##v##type2##opstr);				 \
+Datum														 \
+v##type1##v##type2##opstr(PG_FUNCTION_ARGS)					 \
+{															 \
+    int i, size;											 \
+    v##type1 *arg1 = (v##type1*)PG_GETARG_POINTER(0);		 \
+    v##type2 *arg2 = (v##type2*)PG_GETARG_POINTER(1);		 \
+    v##type1 *res;											 \
+    Assert(arg1->dim == arg2->dim);							 \
+    size = Min(arg1->dim, arg2->dim);						 \
+    res = buildv##type1(size, arg1->skipref);				 \
+    for (i = 0; i < size; i++)								 \
+    {														 \
         res->isnull[i] = arg1->isnull[i] || arg2->isnull[i]; \
-        i++; \
-    } \
-	i=0; \
-    while(i < size) \
-    { \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE1##GetDatum((DatumGet##XTYPE1(arg1->values[i])) opsym (DatumGet##XTYPE2(arg2->values[i]))); \
-        i++; \
-    } \
-    res->dim = arg1->dim; \
-    PG_RETURN_POINTER(res); \
+		res->values[i] = XTYPE1##GetDatum((DatumGet##XTYPE1(arg1->values[i])) opsym (DatumGet##XTYPE2(arg2->values[i]))); \
+    }	 													 \
+    res->dim = size;										 \
+    PG_RETURN_POINTER(res);									 \
 }
 
 /*
@@ -162,25 +155,21 @@ v##type1##v##type2##opstr(PG_FUNCTION_ARGS) \
  * e.g. extern Datum vint2int2pl(PG_FUNCTION_ARGS);
  */
 #define __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, opsym, opstr) \
-PG_FUNCTION_INFO_V1(v##type##const_type##opstr); \
-Datum \
-v##type##const_type##opstr(PG_FUNCTION_ARGS) \
-{ \
-    int size = 0; \
-    int i = 0; \
-    v##type *arg1 = (v##type*)PG_GETARG_POINTER(0); \
-    const_type arg2 = CONST_ARG_MACRO(1); \
-    v##type *res = buildv##type(BATCHSIZE, arg1->skipref); \
-    size = arg1->dim;\
-    while(i < size) \
-    { \
-        res->isnull[i] = arg1->isnull[i]; \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE##GetDatum((DatumGet##XTYPE(arg1->values[i])) opsym ((type)arg2)); \
-        i ++ ;\
-    } \
-    res->dim = arg1->dim; \
-    PG_RETURN_POINTER(res); \
+PG_FUNCTION_INFO_V1(v##type##const_type##opstr);			 \
+Datum														 \
+v##type##const_type##opstr(PG_FUNCTION_ARGS)				 \
+{															 \
+    int i;													 \
+    v##type *arg1 = (v##type*)PG_GETARG_POINTER(0);			 \
+    const_type arg2 = CONST_ARG_MACRO(1);					 \
+    int size = arg1->dim;									 \
+    v##type *res = buildv##type(size, arg1->skipref);		 \
+    for (i = 0; i < size; i++)								 \
+    {														 \
+        res->isnull[i] = arg1->isnull[i];					 \
+		res->values[i] = XTYPE##GetDatum((DatumGet##XTYPE(arg1->values[i])) opsym ((type)arg2)); \
+    }														 \
+    PG_RETURN_POINTER(res);									 \
 }
 
 /*
@@ -189,30 +178,21 @@ v##type##const_type##opstr(PG_FUNCTION_ARGS) \
  * e.g. extern Datum int2vint2pl(PG_FUNCTION_ARGS);
  */
 #define __FUNCTION_OP_LCONST(type, XTYPE, const_type, CONST_ARG_MACRO, opsym, opstr) \
-PG_FUNCTION_INFO_V1(const_type##v##type##opstr); \
-Datum \
-const_type##v##type##opstr(PG_FUNCTION_ARGS) \
-{ \
-    int size = 0; \
-    int i = 0; \
-    const_type arg1 = CONST_ARG_MACRO(0); \
-    v##type *arg2 = (v##type*)PG_GETARG_POINTER(1); \
-    v##type *res = buildv##type(BATCHSIZE, arg2->skipref); \
-    size = arg2->dim;\
-    while(i < size) \
-    { \
-        res->isnull[i] = arg2->isnull[i]; \
-		i++; \
-	} \
-	i=0; \
-    while(i < size) \
-    { \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE##GetDatum(((type)arg1) opsym (DatumGet##XTYPE(arg2->values[i]))); \
-        i ++ ;\
-    } \
-    res->dim = arg2->dim; \
-    PG_RETURN_POINTER(res); \
+PG_FUNCTION_INFO_V1(const_type##v##type##opstr);			 \
+Datum														 \
+const_type##v##type##opstr(PG_FUNCTION_ARGS)				 \
+{															 \
+    int i;													 \
+    const_type arg1 = CONST_ARG_MACRO(0);					 \
+    v##type *arg2 = (v##type*)PG_GETARG_POINTER(1);			 \
+    int size = arg2->dim;									 \
+    v##type *res = buildv##type(size, arg2->skipref);		 \
+    for (i = 0; i < size; i++)								 \
+    {														 \
+        res->isnull[i] = arg2->isnull[i];					 \
+		res->values[i] = XTYPE##GetDatum(((type)arg1) opsym (DatumGet##XTYPE(arg2->values[i]))); \
+    }														 \
+    PG_RETURN_POINTER(res);									 \
 }
 
 
@@ -222,32 +202,23 @@ const_type##v##type##opstr(PG_FUNCTION_ARGS) \
  * e.g. extern Datum vint2vint2eq(PG_FUNCTION_ARGS);
  */
 #define __FUNCTION_CMP(type1, XTYPE1, type2, XTYPE2, cmpsym, cmpstr) \
-PG_FUNCTION_INFO_V1(v##type1##v##type2##cmpstr); \
-Datum \
-v##type1##v##type2##cmpstr(PG_FUNCTION_ARGS) \
-{ \
-	vbool *res; \
-    int size = 0; \
-    int i = 0; \
-    v##type1 *arg1 = (v##type1*)PG_GETARG_POINTER(0); \
-    v##type2 *arg2 = (v##type2*)PG_GETARG_POINTER(1); \
-    Assert(arg1->dim == arg2->dim); \
-    res = buildvtype(BOOLOID, BATCHSIZE, arg1->skipref); \
-    size = arg1->dim; \
-    while(i < size) \
-    { \
-        res->isnull[i] = arg1->isnull[i] || arg2->isnull[i]; \
-		i++; \
-    } \
-	i=0; \
-    while(i < size) \
-    { \
-		if(!res->isnull[i]) \
-            res->values[i] = BoolGetDatum(DatumGet##XTYPE1(arg1->values[i]) cmpsym (DatumGet##XTYPE2(arg2->values[i]))); \
-        i++; \
-    } \
-    res->dim = arg1->dim; \
-    PG_RETURN_POINTER(res); \
+PG_FUNCTION_INFO_V1(v##type1##v##type2##cmpstr);			 \
+Datum														 \
+v##type1##v##type2##cmpstr(PG_FUNCTION_ARGS)				 \
+{															 \
+	vbool *res;												 \
+    int i, size;											 \
+    v##type1 *arg1 = (v##type1*)PG_GETARG_POINTER(0);		 \
+    v##type2 *arg2 = (v##type2*)PG_GETARG_POINTER(1);		 \
+    Assert(arg1->dim == arg2->dim);							 \
+    size = Min(arg1->dim, arg2->dim);						 \
+    res = buildvtype(BOOLOID, size, arg1->skipref);			 \
+    for (i = 0; i < size; i++)								 \
+    {														 \
+        res->isnull[i] = arg1->isnull[i] | arg2->isnull[i];  \
+		res->values[i] = BoolGetDatum(DatumGet##XTYPE1(arg1->values[i]) cmpsym (DatumGet##XTYPE2(arg2->values[i]))); \
+    }														 \
+    PG_RETURN_POINTER(res);									 \
 }
 
 /*
@@ -256,30 +227,21 @@ v##type1##v##type2##cmpstr(PG_FUNCTION_ARGS) \
  * e.g. extern Datum vint2int2eq(PG_FUNCTION_ARGS);
  */
 #define __FUNCTION_CMP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, cmpsym, cmpstr) \
-PG_FUNCTION_INFO_V1(v##type##const_type##cmpstr); \
-Datum \
-v##type##const_type##cmpstr(PG_FUNCTION_ARGS) \
-{ \
-    int size = 0; \
-    int i = 0; \
-    v##type *arg1 = (v##type*)PG_GETARG_POINTER(0); \
-    const_type arg2 = CONST_ARG_MACRO(1); \
-    vbool *res = buildvtype(BOOLOID, BATCHSIZE, arg1->skipref); \
-    size = arg1->dim; \
-    while(i < size) \
-    { \
-        res->isnull[i] = arg1->isnull[i]; \
-        i++; \
-    } \
-	i=0; \
-    while(i < size) \
-    { \
-        if(!res->isnull[i]) \
-            res->values[i] = BoolGetDatum((DatumGet##XTYPE(arg1->values[i])) cmpsym arg2); \
-        i++; \
-    } \
-    res->dim = arg1->dim; \
-    PG_RETURN_POINTER(res); \
+PG_FUNCTION_INFO_V1(v##type##const_type##cmpstr);			 \
+Datum														 \
+v##type##const_type##cmpstr(PG_FUNCTION_ARGS)				 \
+{															 \
+    int i;													 \
+    v##type *arg1 = (v##type*)PG_GETARG_POINTER(0);			 \
+    const_type arg2 = CONST_ARG_MACRO(1);					 \
+    int size = arg1->dim;									 \
+    vbool *res = buildvtype(BOOLOID, size, arg1->skipref);	 \
+    for (i = 0; i < size; i++)								 \
+    {														 \
+        res->isnull[i] = arg1->isnull[i];					 \
+        res->values[i] = BoolGetDatum((DatumGet##XTYPE(arg1->values[i])) cmpsym arg2); \
+    }														 \
+    PG_RETURN_POINTER(res);									 \
 }
 
 //Macro Level 3
@@ -384,3 +346,52 @@ FUNCTION_OP_ALL(int8, Int64)
 FUNCTION_OP_ALL(float4, Float4)
 FUNCTION_OP_ALL(float8, Float8)
 FUNCTION_OP_ALL(bool, Bool)
+
+PG_FUNCTION_INFO_V1(vbool_and_vbool);
+Datum
+vbool_and_vbool(PG_FUNCTION_ARGS)
+{
+	vbool *left = (vbool*)PG_GETARG_POINTER(0);
+	vbool *right = (vbool*)PG_GETARG_POINTER(1);
+	int dim = Min(left->dim, right->dim);
+	vbool *result = buildvbool(dim, left->skipref);
+	int i;
+	for (i = 0; i < dim; i++) {
+		result->values[i] = left->values[i] & right->values[i];
+		result->isnull[i] = left->isnull[i] | right->isnull[i];
+	}
+	PG_RETURN_POINTER(result);
+}
+
+PG_FUNCTION_INFO_V1(vbool_or_vbool);
+Datum
+vbool_or_vbool(PG_FUNCTION_ARGS)
+{
+	vbool *left = (vbool*)PG_GETARG_POINTER(0);
+	vbool *right = (vbool*)PG_GETARG_POINTER(1);
+	int dim = Min(left->dim, right->dim);
+	vbool *result = buildvbool(dim, left->skipref);
+	int i;
+	for (i = 0; i < dim; i++) {
+		result->values[i] = left->values[i] | right->values[i];
+		result->isnull[i] = left->isnull[i] | right->isnull[i];
+	}
+	PG_RETURN_POINTER(result);
+}
+
+PG_FUNCTION_INFO_V1(vbool_to_bool);
+Datum
+vbool_to_bool(PG_FUNCTION_ARGS)
+{
+	vbool *opd = (vbool*)PG_GETARG_POINTER(0);
+	int dim = opd->dim;
+	bool* skip = opd->skipref;
+	bool not_empty = false;
+	int i;
+	for (i = 0; i < dim; i++)
+	{
+		skip[i] |= opd->isnull[i] | !opd->values[i];
+		not_empty |= !skip[i];
+	}
+	PG_RETURN_BOOL(not_empty);
+}

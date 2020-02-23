@@ -7,13 +7,19 @@ PGFILEDESC = "vectorize engine for PostgreSQL"
 
 REGRESS = vectorize_engine
 
-OBJS += vectorEngine.o nodeSeqscan.o nodeAgg.o nodeUnbatch.o execScan.o plan.o utils.o execTuples.o execQual.o vectorTupleSlot.o
+OBJS += vectorEngine.o nodeSeqscan.o nodeAgg.o nodeUnbatch.o execScan.o plan.o utils.o execTuples.o vectorTupleSlot.o
 OBJS += vtype/vtype.o vtype/vtimestamp.o vtype/vint.o vtype/vfloat.o vtype/vpseudotypes.o vtype/vvarchar.o vtype/vdate.o
 
 # print vectorize info when compile
 # PG_CFLAGS = -fopt-info-vec
 
-PG_CFLAGS = -Wno-int-in-bool-context
+ifdef USE_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+else
+subdir = contrib/vectorize_engine
+top_builddir = ../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif

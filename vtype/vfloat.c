@@ -3,6 +3,8 @@
 #include "math.h"
 #include "utils/array.h"
 #include "catalog/pg_type.h"
+#include "nodes/execnodes.h"
+#include "executor/nodeAgg.h"
 
 PG_FUNCTION_INFO_V1(vfloat8vfloat8mul2);
 PG_FUNCTION_INFO_V1(vfloat8pl);
@@ -53,28 +55,30 @@ Datum vfloat8pl(PG_FUNCTION_ARGS)
 	float8		arg1;
 	float8		arg2;
 	int			i;
-	char		**entries;
+	TupleHashEntry *entries;
 	vtype		*batch;
-	Datum *transVal;
-	int32 groupOffset = PG_GETARG_INT32(1);
+	int32 groupOffset = fcinfo->fncollation;
+	AggStatePerGroup group;
 
 	if (groupOffset < 0)
 		elog(ERROR, "Not implemented");
 
-	entries = (char **)PG_GETARG_POINTER(0);
-	batch = (vtype *) PG_GETARG_POINTER(2);
+	entries = (TupleHashEntry *)PG_GETARG_POINTER(0);
+	batch = (vtype *) PG_GETARG_POINTER(1);
+
 	for (i = 0; i < BATCHSIZE; i++)
 	{
-		if (batch->skipref[i])
+		if (batch->skipref[i] || !entries[i])
 			continue;
-		
-		transVal = (Datum *)(entries[i] + groupOffset);	
-		arg1 = DatumGetFloat8(*transVal);
+
+		group = (AggStatePerGroupData*)entries[i]->additional + groupOffset;
+
+		arg1 = DatumGetFloat8(group->transValue);
 		arg2 = DatumGetFloat8(batch->values[i]);
 		result = arg1 + arg2;
 
 		CHECKFLOATVAL(result, isinf(arg1) || isinf(arg2), true);
-		*transVal = Float8GetDatum(result);
+		group->transValue = Float8GetDatum(result);
 	}
 
 	PG_RETURN_INT64(0);
@@ -91,24 +95,24 @@ vfloat8_accum(PG_FUNCTION_ARGS)
 				sumX,
 				sumX2;
 
-	Datum		*transDatum;
 	int			i;
-	char		**entries;
+	TupleHashEntry *entries;
 	vtype		*batch;
-	int32		groupOffset = PG_GETARG_INT32(1);
+	int32		groupOffset = fcinfo->fncollation;
+	AggStatePerGroup group;
 
 	if (groupOffset < 0)
 		elog(ERROR, "Not implemented");
 
-	entries = (char **)PG_GETARG_POINTER(0);
-	batch = (vtype *) PG_GETARG_POINTER(2);
+	entries = (TupleHashEntry *)PG_GETARG_POINTER(0);
+	batch = (vtype *) PG_GETARG_POINTER(1);
 
 	for (i = 0; i < BATCHSIZE; i++)
 	{
-		if (batch->skipref[i])
+		if (batch->skipref[i] || !entries[i])
 			continue;
-		transDatum = (Datum *)(entries[i] + groupOffset);
-		transarray = DatumGetArrayTypeP(*transDatum);
+		group = (AggStatePerGroupData*)entries[i]->additional + groupOffset;
+		transarray = DatumGetArrayTypeP(group->transValue);
 		transvalues = check_float8_array(transarray, "float8_accum", 3);
 		N = transvalues[0];
 		sumX = transvalues[1];
