@@ -1860,6 +1860,7 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 	AggStatePerHash perhash = &aggstate->perhash[aggstate->current_set];
 	TupleTableSlot *hashslot = perhash->hashslot;
 	TupleHashEntryData **entries;
+	int         hash_grow_threshold;
 	bool		isnew;
 	int			i, j;
 
@@ -1868,47 +1869,52 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 
 	/* probe and find hash entries for every tuples in vector slot. */
 	/* TODO: separate cal hashvalue and probe hash table */
-	for (j = 0; j < vslot->dim; j++)
- 	{
-		if (vslot->skip[j])
-			continue;
-
-		ExecClearTuple(hashslot);
-		for (i = 0; i < perhash->numhashGrpCols; i++)
+	do
+	{
+		hash_grow_threshold = perhash->hashtable->hashtab->grow_threshold;
+		for (j = 0; j < vslot->dim; j++)
 		{
-			int			varNumber = perhash->hashGrpColIdxInput[i] - 1;
-			vtype *column = (vtype *)DatumGetPointer(inputslot->tts_values[varNumber]);
-			hashslot->tts_values[i] = column->values[j];
-			hashslot->tts_isnull[i] = column->isnull[j];
-		}
-		ExecStoreVirtualTuple(hashslot);
+			if (vslot->skip[j])
+				continue;
 
-		/* find or create the hashtable entry using the filtered tuple */
-		entries[j] = LookupTupleHashEntry(perhash->hashtable, hashslot, &isnew);
-
-		if (isnew)
-		{
-			AggStatePerGroup pergroup;
-			int			transno;
-
-			pergroup = (AggStatePerGroup)
-				MemoryContextAlloc(perhash->hashtable->tablecxt,
-								   sizeof(AggStatePerGroupData) * aggstate->numtrans);
-			entries[j]->additional = pergroup;
-
-			/*
-			 * Initialize aggregates for new tuple group, lookup_hash_entries()
-			 * already has selected the relevant grouping set.
-			 */
-			for (transno = 0; transno < aggstate->numtrans; transno++)
+			ExecClearTuple(hashslot);
+			for (i = 0; i < perhash->numhashGrpCols; i++)
 			{
-				AggStatePerTrans pertrans = &aggstate->pertrans[transno];
-				AggStatePerGroup pergroupstate = &pergroup[transno];
+				int			varNumber = perhash->hashGrpColIdxInput[i] - 1;
+				vtype *column = (vtype *)DatumGetPointer(inputslot->tts_values[varNumber]);
+				hashslot->tts_values[i] = column->values[j];
+				hashslot->tts_isnull[i] = column->isnull[j];
+			}
+			ExecStoreVirtualTuple(hashslot);
 
-				initialize_aggregate(aggstate, pertrans, pergroupstate);
+			/* find or create the hashtable entry using the filtered tuple */
+			entries[j] = LookupTupleHashEntry(perhash->hashtable, hashslot, &isnew);
+
+			if (isnew)
+			{
+				AggStatePerGroup pergroup;
+				int			transno;
+
+				pergroup = (AggStatePerGroup)
+					MemoryContextAlloc(perhash->hashtable->tablecxt,
+								   sizeof(AggStatePerGroupData) * aggstate->numtrans);
+				entries[j]->additional = pergroup;
+
+				/*
+				 * Initialize aggregates for new tuple group, lookup_hash_entries()
+				 * already has selected the relevant grouping set.
+				 */
+				for (transno = 0; transno < aggstate->numtrans; transno++)
+				{
+					AggStatePerTrans pertrans = &aggstate->pertrans[transno];
+					AggStatePerGroup pergroupstate = &pergroup[transno];
+
+					initialize_aggregate(aggstate, pertrans, pergroupstate);
+				}
+				hash_grow_threshold = 0; /* restart from the beginning */
 			}
 		}
-	}
+	} while (hash_grow_threshold != perhash->hashtable->hashtab->grow_threshold);
 	return entries;
 }
 
@@ -2463,7 +2469,6 @@ agg_retrieve_hash_table(VectorAggState *vas)
 		ExecClearTuple(firstSlot);
 		memset(firstSlot->tts_isnull, true,
 			   firstSlot->tts_tupleDescriptor->natts * sizeof(bool));
-
 		for (i = 0; i < perhash->numhashGrpCols; i++)
 		{
 			int			varNumber = perhash->hashGrpColIdxInput[i] - 1;

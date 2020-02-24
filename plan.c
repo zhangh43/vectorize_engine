@@ -93,12 +93,18 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 			{
 				Var *newnode;
 				Oid vtype;
+				int varno;
 				newnode = (Var*)plan_tree_mutator(node, VectorizeMutator, &ctx);
 				vtype = GetVtype(newnode->vartype);
-				if (!IS_SPECIAL_VARNO(newnode->varno) && newnode->varattno > 0
-					&& (nodeTag(parent_ctx->node) != T_TargetEntry || ctx.level <= 3))
+				varno = newnode->varno;
+				if (IS_SPECIAL_VARNO(varno))
+					varno = 1; /* TODO: correctly resolve special varnos */
+				if (newnode->varattno > 0
+					&& (nodeTag(parent_ctx->node) != T_TargetEntry
+						|| ((TargetEntry*)parent_ctx->node)->resorigtbl == InvalidOid
+						|| ctx.level <= 3))
 				{
-					ctx.maxAttvarno[newnode->varno-1] = Max(ctx.maxAttvarno[newnode->varno-1], newnode->varattno);
+					ctx.maxAttvarno[varno-1] = Max(ctx.maxAttvarno[varno-1], newnode->varattno);
 				}
 				if (InvalidOid == vtype)
 				{
