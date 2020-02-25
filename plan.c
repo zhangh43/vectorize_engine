@@ -82,9 +82,8 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 		return NULL;
 
 	ctx.level = parent_ctx->level + 1;
-	ctx.parent = parent_ctx;
-	ctx.node = node;
 	ctx.maxAttvarno = parent_ctx->maxAttvarno;
+	ctx.is_target_list = parent_ctx->is_target_list;
 
 	//check the type of Var if it can be vectorized
 	switch (nodeTag(node))
@@ -99,10 +98,7 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 				varno = newnode->varno;
 				if (IS_SPECIAL_VARNO(varno))
 					varno = 1; /* TODO: correctly resolve special varnos */
-				if (newnode->varattno > 0
-					&& (nodeTag(parent_ctx->node) != T_TargetEntry
-						|| ((TargetEntry*)parent_ctx->node)->resorigtbl == InvalidOid
-						|| ctx.level <= 3))
+				if (newnode->varattno > 0 && (!ctx.is_target_list || ctx.level <= 3))
 				{
 					ctx.maxAttvarno[varno-1] = Max(ctx.maxAttvarno[varno-1], newnode->varattno);
 				}
@@ -459,6 +455,7 @@ plan_tree_mutator(Node *node,
 static void
 mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context)
 {
+	VectorizedContext* ctx = (VectorizedContext*)context;
 	List* conjuncts = (List*)mutator((Node*)oldplan->qual, context);
 	int n_conjuncts = list_length(conjuncts);
 	if (n_conjuncts > 1)
@@ -503,7 +500,9 @@ mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *cont
 	 */
 
 	/* Node fields need mutation. */
+	ctx->is_target_list = true;
 	MUTATE(newplan->targetlist, oldplan->targetlist, List *);
+	ctx->is_target_list = false;
 	MUTATE(newplan->lefttree, oldplan->lefttree, Plan *);
 	MUTATE(newplan->righttree, oldplan->righttree, Plan *);
 	MUTATE(newplan->initPlan, oldplan->initPlan, List *);

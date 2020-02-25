@@ -8,9 +8,8 @@
 typedef struct VectorizedContext
 {
 	int* maxAttvarno;
-	int level;
-	struct VectorizedContext* parent;
-	Node* node;
+	int  level;
+	bool is_target_list;
 } VectorizedContext;
 
 extern Plan* ReplacePlanNodeWalker(Node *node, VectorizedContext* ctx);

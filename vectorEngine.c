@@ -56,8 +56,7 @@ vector_post_planner(Query	*parse,
 	savedSubplan = stmt->subplans;
 	ctx.maxAttvarno = palloc0(list_length(stmt->rtable) * sizeof(int));
 	ctx.level = 0;
-	ctx.parent = NULL;
-	ctx.node = NULL;
+	ctx.is_target_list = false;
 
 	saved_context = CurrentMemoryContext;
 	PG_TRY();
