@@ -1860,7 +1860,7 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 	AggStatePerHash perhash = &aggstate->perhash[aggstate->current_set];
 	TupleTableSlot *hashslot = perhash->hashslot;
 	TupleHashEntryData **entries;
-	int         hash_grow_threshold;
+	bool        has_new_groups;
 	bool		isnew;
 	int			i, j;
 
@@ -1871,7 +1871,7 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 	/* TODO: separate cal hashvalue and probe hash table */
 	do
 	{
-		hash_grow_threshold = perhash->hashtable->hashtab->grow_threshold;
+		has_new_groups = false;
 		for (j = 0; j < vslot->dim; j++)
 		{
 			if (vslot->skip[j])
@@ -1911,10 +1911,11 @@ lookup_hash_entry(AggState *aggstate, TupleTableSlot *inputslot)
 
 					initialize_aggregate(aggstate, pertrans, pergroupstate);
 				}
-				hash_grow_threshold = 0; /* restart from the beginning */
+				has_new_groups = true;
 			}
 		}
-	} while (hash_grow_threshold != perhash->hashtable->hashtab->grow_threshold);
+	} while (has_new_groups);
+
 	return entries;
 }
 
