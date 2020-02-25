@@ -1825,27 +1825,6 @@ find_hash_columns(AggState *aggstate)
 }
 
 /*
- * Estimate per-hash-table-entry overhead for the planner.
- *
- * Note that the estimate does not include space for pass-by-reference
- * transition data values, nor for the representative tuple of each group.
- * Nor does this account of the target fill-factor and growth policy of the
- * hash table.
- */
-Size
-hash_agg_entry_size(int numAggs)
-{
-	Size		entrysize;
-
-	/* This must match build_hash_table */
-	entrysize = sizeof(TupleHashEntryData) +
-		numAggs * sizeof(AggStatePerGroupData);
-	entrysize = MAXALIGN(entrysize);
-
-	return entrysize;
-}
-
-/*
  * Find or create a hashtable entry for the tuple group containing the current
  * tuple (already set in tmpcontext's outertuple slot), in the current grouping
  * set (which the caller must have selected - note that initialize_aggregate

@@ -69,10 +69,9 @@ Oid GetVtype(Oid ntype)
 
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(VecTypeHashEntry);
-		hash_ctl.hash = oid_hash;
 
 		hashMapN2V = hash_create("vectorized_n2v",TYPE_HASH_TABLE_SIZE,
-								&hash_ctl, HASH_ELEM | HASH_FUNCTION);
+								&hash_ctl, HASH_ELEM | HASH_BLOBS);
 	}
 
 	/* insert supported built-in type and vtypes */
@@ -122,10 +121,9 @@ Oid GetNtype(Oid vtype)
 
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(VecTypeHashEntry);
-		hash_ctl.hash = oid_hash;
 
 		hashMapV2N = hash_create("vectorized_v2n", TYPE_HASH_TABLE_SIZE,
-								&hash_ctl, HASH_ELEM | HASH_FUNCTION);
+								&hash_ctl, HASH_ELEM | HASH_BLOBS);
 	}
 
 	/* insert supported built-in type and vtypes */
