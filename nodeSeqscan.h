@@ -21,7 +21,7 @@ typedef struct VectorScanState
 	/* Attributes for vectorization */
 	SeqScanState	*seqstate;
 	bool		     scanFinish;
-	int              maxVarattno;
+	Bitmapset       *usedColumns;
 	TupleTableSlot  *slot;
 } VectorScanState;
 

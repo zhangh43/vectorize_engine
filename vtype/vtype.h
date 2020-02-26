@@ -22,6 +22,7 @@
 
 #include "postgres.h"
 #include "fmgr.h"
+#include "executor/tuptable.h"
 
 #ifdef bool
 #undef bool
@@ -30,18 +31,6 @@ typedef _Bool bool;
 
 typedef int16 int2;
 typedef int32 int4;
-
-#define BATCHSIZE 1024
-//#define BATCHSIZE 256
-
-typedef struct vtype {
-	Oid     elemtype;
-	int     dim;
-	bool    isnull[BATCHSIZE];
-	Datum   values[BATCHSIZE];
-	bool    *skipref;
-}vtype;
-
 
 #define CANARYSIZE  sizeof(char)
 #define VTYPEHEADERSZ (sizeof(vtype))

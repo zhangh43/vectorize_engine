@@ -98,8 +98,7 @@ CreateVectorScanState(CustomScan *custom_plan)
 	NodeSetTag(vss, T_CustomScanState);
 
 	vss->css.methods = &vectorscan_exec_methods;
-	if (custom_plan->custom_private)
-		vss->maxVarattno = linitial_int(custom_plan->custom_private);
+	vss->usedColumns = (Bitmapset*)linitial(custom_plan->custom_private);
 	return (Node *) vss;
 }
 
@@ -214,7 +213,6 @@ VSeqNext(VectorScanState *vss)
 	EState	   *estate;
 	ScanDirection direction;
 	TupleTableSlot *slot;
-	int				row;
 	SeqScanState	*node = vss->seqstate;
 
 	/*
@@ -231,9 +229,10 @@ VSeqNext(VectorScanState *vss)
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		scandesc = table_beginscan(node->ss.ss_currentRelation,
-								   estate->es_snapshot,
-								   0, NULL);
+		elog(LOG, "Custom scan with projection %lx", vss->usedColumns->words[0]);
+		scandesc = table_beginscan_with_column_projection(node->ss.ss_currentRelation,
+														  estate->es_snapshot,
+														  0, NULL, vss->usedColumns);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
@@ -242,29 +241,8 @@ VSeqNext(VectorScanState *vss)
 	/* return the last batch. */
 	if (!vss->scanFinish)
 	{
-		int natts = vss->maxVarattno ? vss->maxVarattno : vss->slot->tts_tupleDescriptor->natts;
 		/* fetch a batch of rows and fill them into VectorTupleSlot */
-		for (row = 0; row < BATCHSIZE; row++)
-		{
-			/*
-			 * get the next tuple from the table
-			 */
-			if (table_scan_getnextslot(scandesc, direction, vss->slot))
-			{
-				slot_getsomeattrs(vss->slot, natts);
-				VExecStoreColumns(slot, vss->slot, natts);
-			}
-			else
-			{
-				/* scan finish, but we still need to emit current slot */
-				vss->scanFinish = true;
-				break;
-			}
-		}
-		if (row > 0)
-		{
-			ExecStoreVirtualTuple(slot);
-		}
+		vss->scanFinish = !table_scan_getnexttile(scandesc, direction, slot);
 	}
 	return slot;
 }
@@ -428,7 +406,7 @@ VExecEndSeqScan(VectorScanState *vss)
 	 * close heap scan
 	 */
 	if (scanDesc != NULL)
-		heap_endscan(scanDesc);
+		table_endscan(scanDesc);
 }
 
 /* ----------------------------------------------------------------

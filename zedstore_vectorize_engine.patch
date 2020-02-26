@@ -1,0 +1,266 @@
+diff --git a/src/backend/access/zedstore/zedstoream_handler.c b/src/backend/access/zedstore/zedstoream_handler.c
+index 1653a60..793c784 100644
+--- a/src/backend/access/zedstore/zedstoream_handler.c
++++ b/src/backend/access/zedstore/zedstoream_handler.c
+@@ -1285,6 +1285,182 @@ zedstoream_getnextslot(TableScanDesc sscan, ScanDirection direction,
+ }
+ 
+ static bool
++zedstoream_getnexttile(TableScanDesc sscan, ScanDirection direction,
++					   TupleTableSlot *slot)
++{
++	ZedStoreDesc scan = (ZedStoreDesc) sscan;
++	ZedStoreProjectData *scan_proj = &scan->proj_data;
++	int			slot_natts = slot->tts_tupleDescriptor->natts;
++	VectorTupleSlot* vslot = (VectorTupleSlot*)slot;
++	zstid		this_tid;
++	Datum		datum;
++	bool        isnull;
++	int         scan_natts;
++	int         row;
++	vtype*      column;
++
++	if (direction != ForwardScanDirection && scan->rs_scan.rs_parallel)
++		elog(ERROR, "parallel backward scan not implemented");
++
++	if (!scan->started)
++	{
++		MemoryContext oldcontext;
++
++		zs_initialize_proj_attributes(slot->tts_tupleDescriptor, scan_proj);
++
++		if (scan->rs_scan.rs_parallel)
++		{
++			/* Allocate next range of TIDs to scan */
++			if (!zs_parallelscan_nextrange(scan->rs_scan.rs_rd,
++										   (ParallelZSScanDesc) scan->rs_scan.rs_parallel,
++										   &scan->cur_range_start, &scan->cur_range_end))
++			{
++				ExecClearTuple(slot);
++				return false;
++			}
++		}
++		else
++		{
++			scan->cur_range_start = MinZSTid;
++			scan->cur_range_end = MaxPlusOneZSTid;
++		}
++
++		oldcontext = MemoryContextSwitchTo(scan_proj->context);
++		zsbt_tid_begin_scan(scan->rs_scan.rs_rd,
++							scan->cur_range_start,
++							scan->cur_range_end,
++							scan->rs_scan.rs_snapshot,
++							&scan_proj->tid_scan);
++		scan_proj->tid_scan.serializable = true;
++		scan_natts = scan_proj->num_proj_atts;
++
++		for (int i = 1; i < scan_natts; i++)
++		{
++			int			attno = scan_proj->proj_atts[i];
++
++			zsbt_attr_begin_scan(scan->rs_scan.rs_rd,
++								 slot->tts_tupleDescriptor,
++								 attno,
++								 &scan_proj->attr_scans[i - 1]);
++		}
++		MemoryContextSwitchTo(oldcontext);
++		scan->started = true;
++	} else
++		scan_natts = scan_proj->num_proj_atts;
++
++	Assert((scan_natts - 1) <= slot_natts);
++
++	/*
++	 * Initialize the slot.
++	 *
++	 * We initialize all columns to NULL. The values for columns that are projected
++	 * will be set to the actual values below, but it's important that non-projected
++	 * columns are NULL.
++	 */
++	ExecClearTuple(slot);
++	/*
++	 * Find the next visible TID.
++	 */
++	for (row = 0; row < BATCHSIZE; row++)
++	{
++		this_tid = zsbt_tid_scan_next(&scan_proj->tid_scan, direction);
++		if (this_tid == InvalidZSTid)
++		{
++			if (scan->rs_scan.rs_parallel)
++			{
++				/* Allocate next range of TIDs to scan */
++				if (!zs_parallelscan_nextrange(scan->rs_scan.rs_rd,
++											   (ParallelZSScanDesc) scan->rs_scan.rs_parallel,
++											   &scan->cur_range_start, &scan->cur_range_end))
++				{
++					break;
++				}
++
++				zsbt_tid_reset_scan(&scan_proj->tid_scan,
++									scan->cur_range_start, scan->cur_range_end, scan->cur_range_start - 1);
++				row -= 1;
++				continue;
++			}
++			else
++			{
++				break;
++			}
++		}
++
++		/* Note: We don't need to predicate-lock tuples in Serializable mode,
++		 * because in a sequential scan, we predicate-locked the whole table.
++		 */
++
++		/* Fetch the datums of each attribute for this row */
++		for (int i = 1; i < scan_natts; i++)
++		{
++			ZSAttrTreeScan *btscan = &scan_proj->attr_scans[i - 1];
++			Form_pg_attribute attr = btscan->attdesc;
++			int			natt;
++			if (!zsbt_attr_fetch(btscan, &datum, &isnull, this_tid))
++				zsbt_fill_missing_attribute_value(slot->tts_tupleDescriptor, btscan->attno,
++											  &datum, &isnull);
++
++			/*
++			 * flatten any ZS-TOASTed values, because the rest of the system
++			 * doesn't know how to deal with them.
++			 */
++			natt = scan_proj->proj_atts[i];
++
++			if (!isnull && attr->attlen == -1 &&
++				VARATT_IS_EXTERNAL(datum) && VARTAG_EXTERNAL(datum) == VARTAG_ZEDSTORE)
++			{
++				MemoryContext oldcxt = CurrentMemoryContext;
++
++				if (btscan->decoder.tmpcxt)
++					MemoryContextSwitchTo(btscan->decoder.tmpcxt);
++				datum = zedstore_toast_flatten(scan->rs_scan.rs_rd, natt, this_tid, datum);
++				MemoryContextSwitchTo(oldcxt);
++			}
++
++			/* Check that the values coming out of the b-tree are aligned properly */
++			if (!isnull && attr->attlen == -1)
++			{
++				Assert (VARATT_IS_1B(datum) || INTALIGN(datum) == datum);
++			}
++
++			Assert(natt > 0);
++			column = (vtype *)slot->tts_values[natt - 1];
++			column->isnull[row] = isnull;
++			if (!attr->attbyval)
++			{
++				if (!isnull)
++				{
++					MemoryContext oldcxt = MemoryContextSwitchTo(slot->tts_mcxt);
++					datum = PointerGetDatum(PG_DETOAST_DATUM_COPY(datum));
++					MemoryContextSwitchTo(oldcxt);
++				}
++				if (column->values[row])
++					pfree(DatumGetPointer(column->values[row]));
++			}
++			column->values[row] = datum;
++		}
++		vslot->skip[row] = false;
++	}
++	pgstat_count_heap_getnext(scan->rs_scan.rs_rd);
++
++	if (row != 0)
++	{
++		slot->tts_nvalid = slot_natts;
++		slot->tts_flags &= ~TTS_FLAG_EMPTY;
++		vslot->dim = row;
++		for (int i = 0; i < slot_natts; i++)
++		{
++			column = (vtype *)slot->tts_values[i];
++			slot->tts_isnull[i] = false;
++			column->dim = row;
++		}
++		return true;
++	}
++	return false;
++}
++
++static bool
+ zedstoream_tuple_tid_valid(TableScanDesc sscan, ItemPointer tid)
+ {
+ 	ZedStoreDesc scan;
+@@ -2992,6 +3168,7 @@ static const TableAmRoutine zedstoream_methods = {
+ 	.scan_end = zedstoream_endscan,
+ 	.scan_rescan = zedstoream_rescan,
+ 	.scan_getnextslot = zedstoream_getnextslot,
++	.scan_getnexttile = zedstoream_getnexttile,
+ 
+ 	.parallelscan_estimate = zs_parallelscan_estimate,
+ 	.parallelscan_initialize = zs_parallelscan_initialize,
+diff --git a/src/include/access/tableam.h b/src/include/access/tableam.h
+index 90d2375..4a6875f 100644
+--- a/src/include/access/tableam.h
++++ b/src/include/access/tableam.h
+@@ -292,6 +292,14 @@ typedef struct TableAmRoutine
+ 									 TupleTableSlot *slot);
+ 
+ 
++	/*
++	 * Return next tile from `scan`, store in vertical slot.
++	 */
++	bool		(*scan_getnexttile) (TableScanDesc scan,
++									 ScanDirection direction,
++									 TupleTableSlot *tile);
++
++
+ 	/* ------------------------------------------------------------------------
+ 	 * Parallel table scan related functions.
+ 	 * ------------------------------------------------------------------------
+@@ -972,6 +980,16 @@ table_scan_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableS
+ 	return sscan->rs_rd->rd_tableam->scan_getnextslot(sscan, direction, slot);
+ }
+ 
++/*
++ * Return next tile from `scan`, store in vertical slot.
++ */
++static inline bool
++table_scan_getnexttile(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *slot)
++{
++	slot->tts_tableOid = RelationGetRelid(sscan->rs_rd);
++	return sscan->rs_rd->rd_tableam->scan_getnexttile(sscan, direction, slot);
++}
++
+ 
+ /* ----------------------------------------------------------------------------
+  * Parallel table scan related functions.
+diff --git a/src/include/executor/tuptable.h b/src/include/executor/tuptable.h
+index 04feaba..1a5aa54 100644
+--- a/src/include/executor/tuptable.h
++++ b/src/include/executor/tuptable.h
+@@ -242,6 +242,30 @@ typedef struct VirtualTupleTableSlot
+ 	char	   *data;			/* data for materialized slots */
+ } VirtualTupleTableSlot;
+ 
++/*
++ * VectorTupleSlot store a batch of tuples in each slot.
++ */
++#define BATCHSIZE 1024
++
++typedef struct vtype
++{
++	Oid     elemtype;
++	int     dim;
++	bool    isnull[BATCHSIZE];
++	Datum   values[BATCHSIZE];
++	bool    *skipref;
++} vtype;
++
++typedef struct VectorTupleSlot
++{
++	VirtualTupleTableSlot	tts;
++	/* how many tuples does this slot contain */
++	int32			dim;
++
++	/* skip array to represent filtered tuples */
++	bool			skip[BATCHSIZE];
++} VectorTupleSlot;
++
+ typedef struct HeapTupleTableSlot
+ {
+ 	TupleTableSlot base;

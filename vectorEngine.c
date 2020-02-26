@@ -48,32 +48,34 @@ vector_post_planner(Query	*parse,
 	else
 		stmt = standard_planner(parse, cursorOptions, boundParams);
 
-	if (!enable_vectorize_engine)
+	if (!enable_vectorize_engine
+		|| stmt->commandType != CMD_SELECT /* only SELECTS are supported  */
+		|| list_length(stmt->rtable) != 1) /* JOINs are not yet supported */
 		return stmt;
 
 	/* modify plan by using vectorized nodes */
 	savedPlanTree = stmt->planTree;
 	savedSubplan = stmt->subplans;
-	ctx.maxAttvarno = palloc0(list_length(stmt->rtable) * sizeof(int));
-	ctx.level = 0;
-	ctx.is_target_list = false;
 
 	saved_context = CurrentMemoryContext;
 	PG_TRY();
 	{
 		List		*subplans = NULL;
 		ListCell	*cell;
+		ctx.used_columns = NULL;
 
 		stmt->planTree = ReplacePlanNodeWalker((Node *) stmt->planTree, &ctx);
 
 		foreach(cell, stmt->subplans)
 		{
-			Plan	*subplan = ReplacePlanNodeWalker((Node *)lfirst(cell), &ctx);
+			Plan	*subplan;
+			ctx.used_columns = NULL;
+			subplan = ReplacePlanNodeWalker((Node *)lfirst(cell), &ctx);
 			subplans = lappend(subplans, subplan);
 		}
 		stmt->subplans = subplans;
 
-		/* 
+		/*
 		 * vectorize executor exchange batch of tuples between plan nodes
 		 * add unbatch node at top to convert batch to row and send to client.
 		 */

@@ -18,21 +18,6 @@
 
 #include "vtype/vtype.h"
 
-/*
- * VectorTupleSlot store a batch of tuples in each slot.
- */
-typedef struct VectorTupleSlot
-{
-	VirtualTupleTableSlot	tts;
-	/* how many tuples does this slot contain */ 
-	int32			dim;
-
-	/* skip array to represent filtered tuples */
-	bool			skip[BATCHSIZE];
-} VectorTupleSlot;
-
-/* vector tuple slot related interface */
-
 extern TupleTableSlot *VMakeTupleTableSlot(TupleDesc tupDesc);
 extern TupleTableSlot *VExecAllocTableSlot(List **tupleTable, TupleDesc tupDesc);
 
