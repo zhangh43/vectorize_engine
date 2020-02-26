@@ -74,16 +74,10 @@ getNodeReturnType(Node *node)
  * over...
  */
 static Node*
-VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
+VectorizeMutator(Node *node, VectorizedContext *ctx)
 {
-	VectorizedContext ctx;
-
 	if(NULL == node)
 		return NULL;
-
-	ctx.level = parent_ctx->level + 1;
-	ctx.maxAttvarno = parent_ctx->maxAttvarno;
-	ctx.is_target_list = parent_ctx->is_target_list;
 
 	//check the type of Var if it can be vectorized
 	switch (nodeTag(node))
@@ -92,15 +86,11 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 			{
 				Var *newnode;
 				Oid vtype;
-				int varno;
-				newnode = (Var*)plan_tree_mutator(node, VectorizeMutator, &ctx);
+				newnode = (Var*)plan_tree_mutator(node, VectorizeMutator, ctx);
 				vtype = GetVtype(newnode->vartype);
-				varno = newnode->varno;
-				if (IS_SPECIAL_VARNO(varno))
-					varno = 1; /* TODO: correctly resolve special varnos */
-				if (newnode->varattno > 0 && (!ctx.is_target_list || ctx.level <= 3))
+				if (!IS_SPECIAL_VARNO(newnode->varno) && newnode->varattno > 0)
 				{
-					ctx.maxAttvarno[varno-1] = Max(ctx.maxAttvarno[varno-1], newnode->varattno);
+					ctx->maxAttvarno = Max(ctx->maxAttvarno, newnode->varattno);
 				}
 				if (InvalidOid == vtype)
 				{
@@ -127,7 +117,7 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 				Oid		   *true_oid_array;
 				FuncDetailCode	fdresult;
 
-				newnode = (Aggref *)plan_tree_mutator(node, VectorizeMutator, &ctx);
+				newnode = (Aggref *)plan_tree_mutator(node, VectorizeMutator, ctx);
 				oldfnOid = newnode->aggfnoid;
 
 				proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(oldfnOid));
@@ -164,7 +154,7 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 				HeapTuple			tuple;
 
 				/* mutate OpExpr itself in plan_tree_mutator firstly. */
-				bool_expr = (BoolExpr *)plan_tree_mutator(node, VectorizeMutator, &ctx);
+				bool_expr = (BoolExpr *)plan_tree_mutator(node, VectorizeMutator, ctx);
 				if (list_length(bool_expr->args) != 2)
 				{
 					elog(ERROR, "Unary operator not supported");
@@ -198,7 +188,7 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 				HeapTuple			tuple;
 
 				/* mutate OpExpr itself in plan_tree_mutator firstly. */
-				newnode = (OpExpr *)plan_tree_mutator(node, VectorizeMutator, &ctx);
+				newnode = (OpExpr *)plan_tree_mutator(node, VectorizeMutator, ctx);
 				rettype = GetVtype(newnode->opresulttype);
 				if (InvalidOid == rettype)
 				{
@@ -235,7 +225,7 @@ VectorizeMutator(Node *node, VectorizedContext *parent_ctx)
 			}
 
 		default:
-			return plan_tree_mutator(node, VectorizeMutator, &ctx);
+			return plan_tree_mutator(node, VectorizeMutator, ctx);
 	}
 }
 
@@ -334,8 +324,7 @@ plan_tree_mutator(Node *node,
 				cscan->custom_plans = lappend(cscan->custom_plans, vscan);
 				SCANMUTATE(vscan, node);
 				cscan->scan.plan.targetlist = CustomBuildTlist(vscan->plan.targetlist);
-				if (vscan->scanrelid > 0)
-					cscan->custom_private = list_make1_int(ctx->maxAttvarno[vscan->scanrelid-1]);
+				cscan->custom_private = list_make1_int(ctx->maxAttvarno);
 				cscan->custom_scan_tlist = vscan->plan.targetlist;
 				return (Node *)cscan;
 			}
@@ -455,7 +444,6 @@ plan_tree_mutator(Node *node,
 static void
 mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *context)
 {
-	VectorizedContext* ctx = (VectorizedContext*)context;
 	List* conjuncts = (List*)mutator((Node*)oldplan->qual, context);
 	int n_conjuncts = list_length(conjuncts);
 	if (n_conjuncts > 1)
@@ -500,9 +488,7 @@ mutate_plan_fields(Plan *newplan, Plan *oldplan, Node *(*mutator) (), void *cont
 	 */
 
 	/* Node fields need mutation. */
-	ctx->is_target_list = true;
 	MUTATE(newplan->targetlist, oldplan->targetlist, List *);
-	ctx->is_target_list = false;
 	MUTATE(newplan->lefttree, oldplan->lefttree, Plan *);
 	MUTATE(newplan->righttree, oldplan->righttree, Plan *);
 	MUTATE(newplan->initPlan, oldplan->initPlan, List *);

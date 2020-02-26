@@ -7,9 +7,7 @@
 
 typedef struct VectorizedContext
 {
-	int* maxAttvarno;
-	int  level;
-	bool is_target_list;
+	int maxAttvarno;
 } VectorizedContext;
 
 extern Plan* ReplacePlanNodeWalker(Node *node, VectorizedContext* ctx);
