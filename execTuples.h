@@ -9,11 +9,4 @@
 #include "storage/buf.h"
 #include "vtype/vtype.h"
 
-/*
- * prototypes from functions in execTuples.c
- */
-extern void VExecInitResultTupleSlot(EState *estate, PlanState *planstate);
-extern void VExecInitScanTupleSlot(EState *estate, ScanState *scanstate);
-extern TupleTableSlot *VExecInitExtraTupleSlot(EState *estate);
-extern void VExecAssignResultTypeFromTL(PlanState *planstate);
 #endif

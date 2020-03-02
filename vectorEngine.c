@@ -98,7 +98,7 @@ _PG_init(void)
 
 	/* Register customscan node for vectorized scan and agg */
 	InitVectorScan();
-	InitVectorAgg();
+	//InitVectorAgg();
 	InitUnbatch();
 
     /* planner hook registration */

@@ -23,6 +23,11 @@
 #include "postgres.h"
 #include "fmgr.h"
 
+#ifdef bool
+#undef bool
+typedef _Bool bool;
+#endif
+
 typedef int16 int2;
 typedef int32 int4;
 

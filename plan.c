@@ -15,7 +15,6 @@
 #include "miscadmin.h"
 #include "access/htup_details.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/var.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_func.h"
 #include "parser/parse_coerce.h"
@@ -23,7 +22,6 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
 #include "nodes/plannodes.h"
-#include "nodes/relation.h"
 #include "nodes/nodes.h"
 #include "nodes/parsenodes.h"
 #include "utils/acl.h"
@@ -272,7 +270,7 @@ plan_tree_mutator(Node *node,
 				if (((Agg *)node)->aggstrategy != AGG_PLAIN && ((Agg *)node)->aggstrategy != AGG_HASHED)
 					elog(ERROR, "Non plain agg is not supported");
 
-				cscan = MakeCustomScanForAgg();
+				//cscan = MakeCustomScanForAgg();
 				FLATCOPY(vagg, node, Agg);
 				cscan->custom_plans = lappend(cscan->custom_plans, vagg);
 

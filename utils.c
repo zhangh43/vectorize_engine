@@ -8,7 +8,9 @@
  */
 #include "postgres.h"
 
+#include "access/table.h"
 #include "catalog/namespace.h"
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -50,7 +52,7 @@ ClearCustomScanState(CustomScanState *node)
 
 	/* Close the heap relation */
 	if (node->ss.ss_currentRelation)
-		ExecCloseScanRelation(node->ss.ss_currentRelation);
+		table_close(node->ss.ss_currentRelation, NoLock);
 }
 
 
@@ -160,6 +162,5 @@ Oid GetNtype(Oid vtype)
 Oid
 GetTupDescAttVType(TupleDesc tupdesc, int i)
 {
-	Form_pg_attribute att = tupdesc->attrs[i];
-	return GetVtype(att->atttypid);
+	return GetVtype(TupleDescAttr(tupdesc, i)->atttypid);
 }

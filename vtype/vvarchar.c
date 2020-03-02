@@ -1,8 +1,8 @@
 #include "vvarchar.h"
 #include "vtype.h"
 
-PG_FUNCTION_INFO_V1(vvarchar_in);
-PG_FUNCTION_INFO_V1(vvarchar_out);
+PG_FUNCTION_INFO_V1(vvarcharin);
+PG_FUNCTION_INFO_V1(vvarcharout);
 
 
 Datum vvarcharin(PG_FUNCTION_ARGS)

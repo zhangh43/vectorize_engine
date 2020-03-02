@@ -12,13 +12,13 @@
 #include "fmgr.h"
 #include "optimizer/planner.h"
 #include "executor/nodeCustom.h"
+#include "nodes/extensible.h"
 
 #include "nodeUnbatch.h"
 #include "execTuples.h"
 #include "vtype/vtype.h"
 #include "utils.h"
-#include "vectorTupleSlot.h"
-
+#include "tuptable.h"
 
 /*
  * UnbatchState - state object of vectorscan on executor.
@@ -71,54 +71,62 @@ BeginUnbatch(CustomScanState *node, EState *estate, int eflags)
 
 	/* Convert Vtype in tupdesc to Ntype in unbatch Node */
 	{
-		node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+		//node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+		node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleDesc);
 		tupdesc = node->ss.ps.ps_ResultTupleSlot->tts_tupleDescriptor;
+		node->ss.ps.ps_ResultTupleDesc= tupdesc;
 
 		for (int i = 0; i < tupdesc->natts; i++)
 		{
-			Form_pg_attribute attr = tupdesc->attrs[i];
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 			Oid         typid = GetNtype(attr->atttypid);
 			if (typid != InvalidOid)
 				attr->atttypid = typid;
 		}
-		ExecSetSlotDescriptor(node->ss.ps.ps_ResultTupleSlot, tupdesc);
 	}
 
-	vcs->ps_ResultVTupleSlot = VExecInitExtraTupleSlot(estate);
-	vcs->ps_ResultVTupleSlot->tts_tupleDescriptor = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+	//tupdesc = CreateTupleDescCopy(outerPlanState(vcs)->ps_ResultTupleSlot->tts_tupleDescriptor);
+	//vcs->ps_ResultVTupleSlot = ExecInitExtraTupleSlot(estate, tupdesc, &TTSOpsVectorVirtual);
+	vcs->ps_ResultVTupleSlot = NULL;
 }
 
 static TupleTableSlot*
 FetchRowFromBatch(UnbatchState *ubs)
 {
-	VectorTupleSlot    *vslot;
+	VectorTupleTableSlot *vslot;
 	TupleTableSlot	   *slot;
 	int					iter;
 	int					natts;
 	int					i;
 
+	if (!ubs->ps_ResultVTupleSlot)
+		return NULL;
 	
-	slot = ubs->css.ss.ps.ps_ResultTupleSlot;
-	vslot = (VectorTupleSlot *)ubs->ps_ResultVTupleSlot;
+	//slot = ubs->css.ss.ps.ps_ResultTupleSlot;
+	//vslot = (VectorVirtualTupleTableSlot *)ubs->ps_ResultVTupleSlot;
+	vslot = (VectorTupleTableSlot *)ubs->ps_ResultVTupleSlot;
+	slot = (TupleTableSlot *)ubs->ps_ResultVTupleSlot;
 	iter = ubs->iter;
 
 	while(iter < BATCHSIZE && vslot->skip[iter])
 		iter++;
 	
 	/* we have checked that natts is greater than zero */
-	if (iter == BATCHSIZE)
+	if (iter == BATCHSIZE || iter >= vslot->dim)
 		return NULL;
 
-	ExecClearTuple(slot);
+	//TODO
+	//ExecClearTuple(slot);
 	natts = slot->tts_tupleDescriptor->natts;
 	for(i = 0; i < natts; i++)
 	{
-		slot->tts_values[i] = ((vtype*)(vslot->tts.tts_values[i]))->values[iter];
+		slot->tts_values[i] = ((vtype*)(vslot->vector_tts_values[i]))->values[iter];
 		slot->tts_isnull[i] = false;
 	}
 
 	ubs->iter = ++iter;
-	return ExecStoreVirtualTuple(slot);
+	return slot;
+	//return ExecStoreVirtualTuple(slot);
 }
 
 /*
