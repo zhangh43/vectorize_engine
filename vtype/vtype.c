@@ -142,14 +142,7 @@ v##type1##v##type2##opstr(PG_FUNCTION_ARGS) \
     size = arg1->dim; \
     while(i < size) \
     { \
-        res->isnull[i] = arg1->isnull[i] || arg2->isnull[i]; \
-        i++; \
-    } \
-	i=0; \
-    while(i < size) \
-    { \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE1##GetDatum((DatumGet##XTYPE1(arg1->values[i])) opsym (DatumGet##XTYPE2(arg2->values[i]))); \
+        res->values[i] = arg1->values[i] opsym arg2->values[i]; \
         i++; \
     } \
     res->dim = arg1->dim; \
@@ -174,9 +167,7 @@ v##type##const_type##opstr(PG_FUNCTION_ARGS) \
     size = arg1->dim;\
     while(i < size) \
     { \
-        res->isnull[i] = arg1->isnull[i]; \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE##GetDatum((DatumGet##XTYPE(arg1->values[i])) opsym ((type)arg2)); \
+        res->values[i] = XTYPE##GetDatum((DatumGet##XTYPE(arg1->values[i])) opsym ((type)arg2)); \
         i ++ ;\
     } \
     res->dim = arg1->dim; \
@@ -201,14 +192,7 @@ const_type##v##type##opstr(PG_FUNCTION_ARGS) \
     size = arg2->dim;\
     while(i < size) \
     { \
-        res->isnull[i] = arg2->isnull[i]; \
-		i++; \
-	} \
-	i=0; \
-    while(i < size) \
-    { \
-        if(!res->isnull[i]) \
-            res->values[i] = XTYPE##GetDatum(((type)arg1) opsym (DatumGet##XTYPE(arg2->values[i]))); \
+        res->values[i] = XTYPE##GetDatum(((type)arg1) opsym (DatumGet##XTYPE(arg2->values[i]))); \
         i ++ ;\
     } \
     res->dim = arg2->dim; \
@@ -236,14 +220,7 @@ v##type1##v##type2##cmpstr(PG_FUNCTION_ARGS) \
     size = arg1->dim; \
     while(i < size) \
     { \
-        res->isnull[i] = arg1->isnull[i] || arg2->isnull[i]; \
-		i++; \
-    } \
-	i=0; \
-    while(i < size) \
-    { \
-		if(!res->isnull[i]) \
-            res->values[i] = BoolGetDatum(DatumGet##XTYPE1(arg1->values[i]) cmpsym (DatumGet##XTYPE2(arg2->values[i]))); \
+        res->values[i] = BoolGetDatum(DatumGet##XTYPE1(arg1->values[i]) cmpsym (DatumGet##XTYPE2(arg2->values[i]))); \
         i++; \
     } \
     res->dim = arg1->dim; \
@@ -267,15 +244,9 @@ v##type##const_type##cmpstr(PG_FUNCTION_ARGS) \
     vbool *res = buildvtype(BOOLOID, BATCHSIZE, arg1->skipref); \
     size = arg1->dim; \
     while(i < size) \
-    { \
-        res->isnull[i] = arg1->isnull[i]; \
-        i++; \
-    } \
-	i=0; \
     while(i < size) \
     { \
-        if(!res->isnull[i]) \
-            res->values[i] = BoolGetDatum((DatumGet##XTYPE(arg1->values[i])) cmpsym arg2); \
+        res->values[i] = BoolGetDatum((DatumGet##XTYPE(arg1->values[i])) cmpsym arg2); \
         i++; \
     } \
     res->dim = arg1->dim; \
@@ -288,7 +259,6 @@ v##type##const_type##cmpstr(PG_FUNCTION_ARGS) \
     __FUNCTION_OP(type1, XTYPE1, type2, XTYPE2, +, pl)  \
     __FUNCTION_OP(type1, XTYPE1, type2, XTYPE2, -, mi)  \
     __FUNCTION_OP(type1, XTYPE1, type2, XTYPE2, *, mul) \
-    __FUNCTION_OP(type1, XTYPE1, type2, XTYPE2, /, div)
 
 #define _FUNCTION_DATE_OP_CONST(type, XTYPE, const_type, CONST_ARG_MACRO) \
     __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, +, pl)  \
@@ -300,11 +270,9 @@ v##type##const_type##cmpstr(PG_FUNCTION_ARGS) \
     __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, +, pl)  \
     __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, -, mi)  \
     __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, *, mul) \
-    __FUNCTION_OP_RCONST(type, XTYPE, const_type, CONST_ARG_MACRO, /, div) \
     __FUNCTION_OP_LCONST(type, XTYPE, const_type, CONST_ARG_MACRO, +, pl)  \
     __FUNCTION_OP_LCONST(type, XTYPE, const_type, CONST_ARG_MACRO, -, mi)  \
     __FUNCTION_OP_LCONST(type, XTYPE, const_type, CONST_ARG_MACRO, *, mul) \
-    __FUNCTION_OP_LCONST(type, XTYPE, const_type, CONST_ARG_MACRO, /, div)
 
 #define _FUNCTION_CMP(type1, XTYPE1, type2, XTYPE2) \
     __FUNCTION_CMP(type1, XTYPE1, type2, XTYPE2, ==, eq) \
