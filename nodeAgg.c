@@ -2249,6 +2249,7 @@ agg_retrieve_direct(VectorAggState *vas)
 	AggStatePerGroup pergroup;
 	TupleTableSlot *outerslot;
 	TupleTableSlot *firstSlot;
+	VectorTupleSlot *VectorFirstSlot;
 	TupleTableSlot *result;
 	bool		hasGroupingSets = aggstate->phase->numsets > 0;
 	int			numGroupingSets = Max(aggstate->phase->numsets, 1);
@@ -2259,6 +2260,9 @@ agg_retrieve_direct(VectorAggState *vas)
 	vtype		*column;
 	VectorTupleSlot	*vslot;
 	TupleDesc		vdesc;
+	int iter;
+
+	iter = vas->iter;
 
 	/*
 	 * get state info from node
@@ -2478,6 +2482,7 @@ agg_retrieve_direct(VectorAggState *vas)
 
 				/* set up for first advance_aggregates call */
 				tmpcontext->ecxt_outertuple = firstSlot;
+				VectorFirstSlot = (VectorTupleSlot *)firstSlot;
 
 				/*
 				 * Process each outer-plan tuple, and then fetch the next one,
@@ -2485,48 +2490,134 @@ agg_retrieve_direct(VectorAggState *vas)
 				 */
 				for (;;)
 				{
-					if (DO_AGGSPLIT_COMBINE(aggstate->aggsplit))
-						combine_aggregates(aggstate, pergroup);
-					else
-						advance_aggregates(aggstate, pergroup);
-
-					/* Reset per-input-tuple context after each tuple */
-					ResetExprContext(tmpcontext);
-
-					outerslot = fetch_input_tuple(aggstate);
-					if (TupIsNull(outerslot))
+					// if all the key in vector slot are the same
+					bool sameGroupResult;
 					{
-						/* no more outer-plan tuples available */
-						if (hasGroupingSets)
+						MemoryContext oldContext;
+
+						int i1;
+						int pos = BATCHSIZE-1;
+
+						/* Reset and switch into the temp context. */
+						MemoryContextReset(tmpcontext->ecxt_per_tuple_memory);
+						oldContext = MemoryContextSwitchTo(
+								tmpcontext->ecxt_per_tuple_memory);
+						sameGroupResult = true;
+
+						// support no skipping case now.
+						while (VectorFirstSlot->skip[pos])
+							pos--;
+
+						for (i1 = node->numCols; --i1 >= 0;) {
+							AttrNumber att = node->grpColIdx[i1];
+							Datum attr1, attr2;
+							bool isNull1, isNull2;
+
+							attr1 =
+									((vtype*) (VectorFirstSlot->tts.tts_values[att
+											- 1]))->values[iter];
+
+							attr2 =
+									((vtype*) (VectorFirstSlot->tts.tts_values[att
+											- 1]))->values[pos];
+
+							if (!DatumGetBool(
+									FunctionCall2(
+											&aggstate->phase->eqfunctions[i],
+											attr1, attr2))) {
+								sameGroupResult = false; /* they aren't equal */
+								break;
+							}
+						}
+						MemoryContextSwitchTo(oldContext);
+					}
+					if (sameGroupResult)
+					{
+						if (DO_AGGSPLIT_COMBINE(aggstate->aggsplit))
+							combine_aggregates(aggstate, pergroup);
+						else
+							advance_aggregates(aggstate, pergroup, iter, BATCHSIZE);
+
+						/* Reset per-input-tuple context after each tuple */
+						ResetExprContext(tmpcontext);
+
+						outerslot = fetch_input_tuple(aggstate);
+						if (TupIsNull(outerslot)) {
+							/* no more outer-plan tuples available */
+							if (hasGroupingSets) {
+								aggstate->input_done = true;
+								break;
+							} else {
+								aggstate->agg_done = true;
+								break;
+							}
+						}
+						/* set up for next advance_aggregates call */
+						tmpcontext->ecxt_outertuple = outerslot;
+						VectorFirstSlot = (VectorTupleSlot *)outerslot;
+						/*
+						 * If we are grouping, check whether we've crossed a group
+						 * boundary.
+						 */
+						if (node->aggstrategy == AGG_SORTED) {
+							if (!execTuplesMatch(firstSlot, outerslot,
+									node->numCols, node->grpColIdx,
+									aggstate->phase->eqfunctions,
+									tmpcontext->ecxt_per_tuple_memory)) {
+								aggstate->grp_firstTuple = ExecCopySlotTuple(
+										outerslot);
+								break;
+							}
+						}
+
+					}
+					// we found a group boundary o
+					else
+					{
+						MemoryContext oldContext;
+						bool		result;
+						int			i0;
+						int olditer = iter;
+
+						/* Reset and switch into the temp context. */
+						MemoryContextReset(tmpcontext->ecxt_per_tuple_memory);
+						oldContext = MemoryContextSwitchTo(tmpcontext->ecxt_per_tuple_memory);
+						result = true;
+
+						while(iter < BATCHSIZE && vslot->skip[iter])
+							iter++;
+
+						for (i0 = node->numCols; --i0 >= 0;)
 						{
-							aggstate->input_done = true;
+							AttrNumber att = node->grpColIdx[i0];
+							Datum attr1, attr2;
+							bool isNull1, isNull2;
+
+							attr1 =
+							((vtype*) (VectorFirstSlot->tts.tts_values[att-1]))->values[iter];
+
+							attr2 =
+									((vtype*) (VectorFirstSlot->tts.tts_values[att-1]))->values[iter];
+
+							if (!DatumGetBool(
+									FunctionCall2(
+											&aggstate->phase->eqfunctions[i],
+											attr1, attr2))) {
+								result = false; /* they aren't equal */
+								break;
+							}
+						}
+						MemoryContextSwitchTo(oldContext);
+						if (!result) {
+							advance_aggregates(aggstate, pergroup, olditer, iter+1);
+							vas->iter = iter+1;
 							break;
 						}
 						else
 						{
-							aggstate->agg_done = true;
-							break;
+							elog(ERROR,"result must be false");
 						}
-					}
-					/* set up for next advance_aggregates call */
-					tmpcontext->ecxt_outertuple = outerslot;
 
-					/*
-					 * If we are grouping, check whether we've crossed a group
-					 * boundary.
-					 */
-					if (node->aggstrategy == AGG_SORTED)
-					{
-						if (!execTuplesMatch(firstSlot,
-											 outerslot,
-											 node->numCols,
-											 node->grpColIdx,
-											 aggstate->phase->eqfunctions,
-										  tmpcontext->ecxt_per_tuple_memory))
-						{
-							aggstate->grp_firstTuple = ExecCopySlotTuple(outerslot);
-							break;
-						}
 					}
 				}
 			}

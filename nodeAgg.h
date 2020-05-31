@@ -25,6 +25,7 @@ typedef struct VectorAggState
 	/* Attributes for vectorization */
 	AggState		*aggstate;
 	TupleTableSlot	*resultSlot;
+	int iter;
 } VectorAggState;
 
 extern CustomScan *MakeCustomScanForAgg(void);
